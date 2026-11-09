@@ -1,0 +1,353 @@
+================================================================================
+GUIA DE INTEGRAÇÃO: LLM + DADOS DE VULNERABILIDADE (CVE/NVD/EPSS)
+Versão 1.0
+Escopo: pipeline de análise de CVEs, classificação, enriquecimento e relatório
+================================================================================
+
+--------------------------------------------------------------------------------
+1. ARQUITETURA RECOMENDADA
+--------------------------------------------------------------------------------
+
+    [NVD 2.0 feed] --\
+                      >-- [Normalizador] --> [Dataset/Catálogo] <-- [EPSS API]
+    [Bulletins vendor]/                                 |
+                                                        v
+                                        [Retrieval (embeddings)] <-- [LLM]
+                                                        |
+                                                        v
+                                        [Tool calling] --> [Funções Python]
+                                                        |
+                                                        v
+                                        [Saída estruturada JSON]
+
+Componentes:
+  a) Ingestão: baixa feeds, deduplica, normaliza em registro único por CVE.
+  b) Retrieval: embeddings sobre descrição + CWE + vendor para dar contexto ao LLM.
+  c) Geração: LLM produz análise/classificação com saída JSON validada.
+  d) Ferramentas (tools): funções Python que o LLM pode chamar (lookup, scoring
+     temporal, diff de patch).
+  e) Validação: schema check + regras de negócio antes de usar a saída.
+
+--------------------------------------------------------------------------------
+2. SCHEMA DE ENTRADA (o contrato de dados)
+--------------------------------------------------------------------------------
+
+Um registro normalizado por CVE. Mantenha um dataclass/Pydantic para garantir
+que o LLM nunca receba campo faltante silenciosamente.
+
+    from pydantic import BaseModel, Field
+    from typing import Literal, Optional
+
+    class CveRecord(BaseModel):
+        cve_id: str = Field(pattern=r"^CVE-\d{4}-\d{4,}$")
+        published: str                     # ISO-8601
+        cna: str
+        cwe: list[str]
+        cvss_v4: Optional[float] = None
+        cvss_v3: Optional[float] = None
+        attack_vector: Literal["NETWORK","ADJACENT","LOCAL","PHYSICAL","UNKNOWN"]
+        privileges_required: Literal["NONE","LOW","HIGH","UNKNOWN"]
+        user_interaction: Literal["NONE","REQUIRED","UNKNOWN"]
+        impact_conf: Literal["NONE","LOW","HIGH"]
+        impact_integ: Literal["NONE","LOW","HIGH"]
+        impact_avail: Literal["NONE","LOW","HIGH"]
+        epss: Optional[float] = None
+        in_kev: bool = False
+        affected_cpes: list[str] = []
+        fixed_in: Optional[str] = None
+        description: str
+
+--------------------------------------------------------------------------------
+3. EXEMPLO DE REGISTRO REAL (estudo de caso)
+--------------------------------------------------------------------------------
+
+    {
+      "cve_id": "CVE-2026-20978",
+      "published": "2026-02-04",
+      "cna": "Samsung Mobile",
+      "cwe": ["CWE-269"],
+      "cvss_v4": 5.8,
+      "cvss_v3": 6.1,
+      "attack_vector": "LOCAL",
+      "privileges_required": "LOW",
+      "user_interaction": "NONE",
+      "impact_conf": "NONE",
+      "impact_integ": "HIGH",
+      "impact_avail": "LOW",
+      "epss": 0.00131,
+      "in_kev": false,
+      "affected_cpes": [
+        "cpe:2.3:o:samsung:android:13.0",
+        "cpe:2.3:o:samsung:android:14.0",
+        "cpe:2.3:o:samsung:android:15.0",
+        "cpe:2.3:o:samsung:android:16.0"
+      ],
+      "fixed_in": "SMR Feb-2026 Release 1",
+      "description": "Improper authorization in KnoxGuardManager prior to SMR Feb-2026 Release 1 allows local attackers to bypass the persistence configuration of the application."
+    }
+
+Leitura técnica do caso:
+  - AV:L + PR:L  => exige posição local e privilégios já obtidos. Não é RCE.
+  - VI:H         => o impacto real é sobre INTEGRIDADE/configuração do componente.
+  - EPSS ~0.001  => exploração em massa improvável; prioridade baixa.
+  - Sem KEV      => nenhum exploit confirmado in-the-wild até a consulta.
+  Conclusão que um LLM deveria produzir: "patch de rotina, aplicar no próximo
+  ciclo, sem urgência operacional".
+
+--------------------------------------------------------------------------------
+4. INGESTÃO: CÓDIGO DE COLETA
+--------------------------------------------------------------------------------
+
+    import gzip, json, httpx
+
+    def fetch_nvd_recent(url: str) -> list[dict]:
+        with httpx.stream("GET", url, timeout=120, follow_redirects=True) as r:
+            r.raise_for_status()
+            raw = b"".join(r.iter_bytes())
+        data = json.loads(gzip.decompress(raw))
+        out = []
+        for item in data.get("vulnerabilities", []):
+            c = item["cve"]
+            m = {d["type"]: d["value"] for d in c.get("metrics", {}).get(
+                "cvssMetricV31", [])[:1]}
+            out.append(c)
+        return out
+
+    def fetch_epss(cve_ids: list[str]) -> dict[str, float]:
+        ids = ",".join(cve_ids)
+        r = httpx.get(f"https://api.first.org/data/v1/epss?cve={ids}", timeout=60)
+        r.raise_for_status()
+        return {d["cve"]: float(d["epss"]) for d in r.json().get("data", [])}
+
+Observações:
+  - NVD limita taxa de requisição; use intervalo de 6s sem API key.
+  - Guarde o payload bruto (auditoria + reprodutibilidade do dataset).
+
+--------------------------------------------------------------------------------
+5. RETRIEVAL (RAG) SOBRE DESCRIÇÕES
+--------------------------------------------------------------------------------
+
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+
+    enc = SentenceTransformer("all-MiniLM-L6-v2")
+
+    def build_index(records: list[dict]) -> np.ndarray:
+        texts = [f'{r["cve_id"]} | {",".join(r["cwe"])} | {r["description"]}'
+                 for r in records]
+        return enc.encode(texts, normalize_embeddings=True)
+
+    def top_k(query: str, index: np.ndarray, records: list[dict], k: int = 8):
+        q = enc.encode([query], normalize_embeddings=True)[0]
+        scores = index @ q              # cosseno (embeddings normalizados)
+        idx = np.argsort(-scores)[:k]
+        return [{"score": float(scores[i]), **records[i]} for i in idx]
+
+Por que RAG aqui:
+  - O LLM não "sabe" CVEs recentes; o retrieval injeta os registros corretos.
+  - Reduz alucinação de versões/IDs: o modelo cita o que está no contexto.
+  - Permite atualizar o conhecimento sem retreinar o modelo.
+
+--------------------------------------------------------------------------------
+6. TOOL CALLING: DEIXE O LLM CHAMAR CÓDIGO
+--------------------------------------------------------------------------------
+
+Definição das ferramentas (formato OpenAI-compatible):
+
+    tools = [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup_cve",
+          "description": "Retorna o registro normalizado de uma CVE do catálogo local.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "cve_id": {"type": "string", "pattern": "^CVE-\\d{4}-\\d{4,}$"}
+            },
+            "required": ["cve_id"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "patch_status",
+          "description": "Compara o SMR/patch level do device com o fixed_in da CVE.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "device_smr": {"type": "string"},
+              "cve_id": {"type": "string"}
+            },
+            "required": ["device_smr", "cve_id"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "prioritize",
+          "description": "Calcula prioridade operacional a partir de CVSS, EPSS e KEV.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "cvss": {"type": "number"},
+              "epss": {"type": "number"},
+              "in_kev": {"type": "boolean"}
+            },
+            "required": ["cvss", "epss", "in_kev"]
+          }
+        }
+      }
+    ]
+
+Implementação local das ferramentas:
+
+    def prioritize(cvss: float, epss: float, in_kev: bool) -> dict:
+        if in_kev or epss >= 0.10:
+            tier = "P1"          # exploração provável / confirmada
+        elif cvss >= 7.0 and epss >= 0.01:
+            tier = "P2"
+        elif cvss >= 7.0:
+            tier = "P3"
+        else:
+            tier = "P4"
+        return {"tier": tier,
+                "rationale": f"cvss={cvss} epss={epss} kev={in_kev}"}
+
+Loop de orquestração (pseudo-código compatível com SDKs de tool calling):
+
+    def run_agent(user_msg: str, client, model: str, max_steps: int = 6):
+        msgs = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": user_msg},
+        ]
+        for _ in range(max_steps):
+            resp = client.chat.completions.create(
+                model=model, messages=msgs, tools=tools, tool_choice="auto",
+                temperature=0.0)
+            m = resp.choices[0].message
+            msgs.append(m.model_dump(exclude_none=True))
+            if not m.tool_calls:
+                return m.content
+            for tc in m.tool_calls:
+                args = json.loads(tc.function.arguments)
+                fn = {"lookup_cve": lookup_cve,
+                      "patch_status": patch_status,
+                      "prioritize": prioritize}[tc.function.name]
+                msgs.append({"role": "tool", "tool_call_id": tc.id,
+                             "content": json.dumps(fn(**args))})
+        return "limite de passos atingido"
+
+Pontos críticos:
+  - temperature=0.0 para análise factual.
+  - Sempre valide `arguments` com Pydantic antes de executar.
+  - Nunca deixe o LLM escrever SQL/shell direto; exponha só funções tipadas.
+
+--------------------------------------------------------------------------------
+7. SYSTEM PROMPT (template)
+--------------------------------------------------------------------------------
+
+    Você é um analista de vulnerabilidades. Regras:
+    1. Use SOMENTE dados retornados pelas ferramentas; não invente versões,
+       datas, IDs ou scores.
+    2. Se um campo estiver ausente, escreva "não disponível" — não estime.
+    3. Sempre diferencie: (a) severidade teórica (CVSS) de
+       (b) probabilidade de exploração (EPSS/KEV).
+    4. Responda em JSON quando solicitado, válido e sem comentários.
+    5. Priorize por risco operacional, não apenas por CVSS.
+    6. Se a CVE exigir acesso local ou privilégios, diga isso explicitamente.
+
+--------------------------------------------------------------------------------
+8. SAÍDA ESTRUTURADA + VALIDAÇÃO
+--------------------------------------------------------------------------------
+
+    from pydantic import BaseModel
+    from typing import Literal
+
+    class Analysis(BaseModel):
+        cve_id: str
+        summary: str
+        severity_class: Literal["critical","high","medium","low"]
+        exploitation_likelihood: Literal["confirmed","likely","possible","unlikely"]
+        requires_local_access: bool
+        patch_action: Literal["immediate","next_cycle","routine","monitor"]
+        confidence: float          # 0..1
+        assumptions: list[str] = []
+
+    def parse_analysis(raw: str) -> Analysis:
+        return Analysis.model_validate_json(raw)   # falha alto e cedo
+
+Ferramentas de suporte (OpenAI/JSON Schema e similares):
+    response_format={"type": "json_schema", "json_schema": {...}}
+
+--------------------------------------------------------------------------------
+9. FEW-SHOT (exemplo de qualidade)
+--------------------------------------------------------------------------------
+
+    USER:  Analise CVE-2026-20978 no meu fleet Samsung (Android 14, SMR Jan-2026).
+    ASSISTANT (chamadas): lookup_cve("CVE-2026-20978") -> patch_status(...)
+    ASSISTANT (final):
+    {
+      "cve_id": "CVE-2026-20978",
+      "summary": "Falha de autorização em KnoxGuardManager permite a atacante
+                  local com privilégios burlar a configuração de persistência
+                  do app.",
+      "severity_class": "medium",
+      "exploitation_likelihood": "unlikely",
+      "requires_local_access": true,
+      "patch_action": "next_cycle",
+      "confidence": 0.9,
+      "assumptions": ["EPSS consultado em 2026-11; pode mudar"]
+    }
+
+--------------------------------------------------------------------------------
+10. AVALIAÇÃO (não pule esta parte)
+--------------------------------------------------------------------------------
+
+Métricas mínimas:
+  - Acurácia de schema (JSON válido e validado): alvo 100%.
+  - Acurácia de classificação de severidade vs. ground truth do NVD.
+  - Taxa de alucinação: IDs/versões citados que não existem no catálogo.
+    Implemente: extraia todos os tokens CVE-\d{4}-\d+ da resposta e faça
+    set(resposta) - set(catalogo); qualquer diferença é alucinação.
+  - Concordância de priorização com decisões humanas (kappa de Cohen).
+
+Teste de regressão:
+  - Congele 200 CVEs com análise humana revisada.
+  - Rode o agente e compare campo a campo; falhas bloqueiam deploy.
+  - Split temporal: treine/ajuste prompts com CVEs antigas, avalie com recentes.
+
+--------------------------------------------------------------------------------
+11. ARMADILHAS COMUNS
+--------------------------------------------------------------------------------
+
+  1. Confiar no CVSS como prioridade. CVSS mede impacto teórico; EPSS/KEV
+     medem realidade. Ensine o modelo a usar os três.
+  2. Deixar o LLM "lembrar" versões. Sempre lookup no catálogo.
+  3. Contexto gigante. Mande 5–10 registros por vez, não o feed inteiro.
+  4. Misturar treino e teste por data. Split temporal é obrigatório.
+  5. Ignorar custo: cache de lookup e embeddings; não re-indexe a cada query.
+  6. Prompt sem regra de "não invente" -> alucinação garantida em IDs.
+  7. Tool calling sem validação de argumentos -> execução de função inválida.
+  8. Logar dados sensíveis do fleet no prompt (serial, IMEI). Anonimize.
+
+--------------------------------------------------------------------------------
+12. CHECKLIST DE IMPLANTAÇÃO
+--------------------------------------------------------------------------------
+
+  [ ] Catálogo normalizado e versionado (data snapshot + hash)
+  [ ] Schema Pydantic para entrada e saída
+  [ ] Índice de embeddings + política de atualização
+  [ ] Ferramentas tipadas e validadas
+  [ ] System prompt com regras de não-alucinação
+  [ ] Saída JSON validada antes de qualquer uso
+  [ ] Suite de regressão com 200 CVEs congeladas
+  [ ] Métrica de alucinação automática
+  [ ] Logs sem PII e com trace de tool calls
+  [ ] Custo/limite de tokens monitorado
+
+================================================================================
+FIM
+================================================================================

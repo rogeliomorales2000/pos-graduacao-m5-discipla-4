@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "createdAt": "2026-11-05T23:47:12.384Z",
+  "format": "security-tune-jsonl",
+  "scope": "defensive-purple-authorized-red",
+  "total": 514,
+  "splits": {
+    "train": 464,
+    "validation": 25,
+    "test": 25
+  },
+  "categories": {
+    "cve-analysis": 150,
+    "purple-validation": 62,
+    "incident-response": 42,
+    "vulnerability-prioritization": 30,
+    "purple-detection": 50,
+    "patch-validation": 30,
+    "threat-hunting": 20,
+    "secure-code": 60,
+    "red-team-authorized": 30,
+    "reporting": 20,
+    "safety-boundary": 20
+  },
+  "tracks": {
+    "defensive": 252,
+    "purple": 132,
+    "secure-code": 60,
+    "red-authorized": 50,
+    "safety": 20
+  },
+  "safety": {
+    "defensive": true,
+    "authorizedOnly": true,
+    "noWeaponizedContent": true
+  },
+  "sha256": {
+    "train": "a9079c1fc49a84f19820294a1ce5380714e28c26fbcbe77855ff4840388a216f",
+    "validation": "df5f6178ee7c9919148a7cd96a3fd649ea4c50cc602cc3b7561f4fa1659c0b69",
+    "test": "e0d27b85174e0691932e10315109d658bff96b1171df1ee0844086ee844724f9"
+  }
+}

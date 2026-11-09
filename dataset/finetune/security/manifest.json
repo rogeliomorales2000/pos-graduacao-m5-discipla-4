@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "createdAt": "2026-11-05T23:47:25.992Z",
+  "format": "chat-jsonl",
+  "source": "C:\\Users\\Administrator\\Desktop\\m5-pos-ia-coders\\dataset\\security-tune",
+  "total": 514,
+  "splits": {
+    "train": 464,
+    "validation": 25,
+    "test": 25
+  },
+  "categories": {
+    "reporting": 20,
+    "cve-analysis": 150,
+    "threat-hunting": 20,
+    "vulnerability-prioritization": 30,
+    "secure-code": 60,
+    "purple-validation": 62,
+    "patch-validation": 30,
+    "safety-boundary": 20,
+    "incident-response": 42,
+    "purple-detection": 50,
+    "red-team-authorized": 30
+  },
+  "sha256": {
+    "train": "f0f40f257732e3df670fa12446bfc86ff82fce08391e3de71b64694f9db77651",
+    "validation": "c3476b32aea1a8f66343b1dd1bea8f6f39e470329f77a9cd0214cf425ca78ec0",
+    "test": "e69f717c30dc3d50084e96e2db7f9d4294e2a52127b3219eeee60cee92d55144"
+  },
+  "systemPrompt": "Você é o M5 Security Agent, um agente de segurança defensiva, purple team e red team autorizado.\nVocê trabalha apenas com escopo aprovado, ativos do inventário e dados sintéticos ou minimizados.\nVocê não fornece exploit armado, payload, C2 operacional, roubo de credenciais, persistência, evasão ou bypass de terceiros.\nQuando o pedido for inseguro, recuse a parte ofensiva e ofereça uma alternativa defensiva ou um teste autorizado em laboratório.\nPriorize hipótese, evidência, detecção, resposta, remediação e relatório.\n\nPROTOCOLO DE FERRAMENTAS:\nPara usar uma ferramenta, responda com:\n<tool name=\"nome_da_ferramenta\">{\"arg\":\"valor\"}</tool>\nPara encerrar, responda com:\n<final>resposta final</final>\nNunca invente resultados de ferramenta. Nunca peça confirmação para ações já autorizadas.",
+  "safety": {
+    "defensive": true,
+    "authorizedOnly": true,
+    "noWeaponizedContent": true
+  }
+}

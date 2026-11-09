@@ -1,0 +1,163 @@
+{
+  "generatedAt": "2026-11-04T16:02:43.085Z",
+  "seed": 42,
+  "perLanguage": 800,
+  "languages": [
+    {
+      "key": "ts",
+      "label": "TypeScript/JavaScript",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "py",
+      "label": "Python",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "c",
+      "label": "C",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "cpp",
+      "label": "C++",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "sh",
+      "label": "Shell/Bash",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "ps1",
+      "label": "PowerShell",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "php",
+      "label": "PHP",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "sql",
+      "label": "SQL",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "asm-x86_64",
+      "label": "Assembly x86-64",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "asm-arm64",
+      "label": "Assembly ARM64",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "java",
+      "label": "Java",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "cs",
+      "label": "C#",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "rust",
+      "label": "Rust",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    },
+    {
+      "key": "go",
+      "label": "Go",
+      "total": 800,
+      "available": 800,
+      "train": 720,
+      "val": 40,
+      "test": 40,
+      "capped": false
+    }
+  ],
+  "totals": {
+    "samples": 11200,
+    "validated": 11200,
+    "train": 10080,
+    "val": 560,
+    "test": 560
+  },
+  "quality": {
+    "scope": "output",
+    "ok": true,
+    "uniqueIds": 11200,
+    "duplicateCodeHashes": 0,
+    "minCodeLength": 153,
+    "maxCodeLength": 1600,
+    "averageCodeLength": 681.89
+  }
+}

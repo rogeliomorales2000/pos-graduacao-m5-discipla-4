@@ -8,7 +8,21 @@
     "build": "tsc --noEmit",
     "chat": "tsx cli/mini-gpt/chat.ts",
     "generate": "tsx cli/mini-gpt/generate.ts",
-    "train:mini-gpt": "tsx cli/mini-gpt/train.ts"
+    "train:mini-gpt": "tsx cli/mini-gpt/train.ts",
+    "agent": "tsx apps/agent/src/cli.ts",
+    "agent:ollama": "tsx apps/agent/scripts/chat-ollama.ts",
+    "agent:train": "tsx apps/agent/src/model/train-cli.ts",
+    "agent:dataset": "tsx apps/agent/src/datasets/generate.ts",
+    "agent:index": "tsx apps/agent/src/index/cli.ts",
+    "agent:knowledge": "tsx apps/agent/src/knowledge/cli.ts",
+    "agent:security-dataset": "tsx apps/agent/src/datasets/security-tune.ts",
+    "agent:security-export": "tsx apps/agent/scripts/export-finetune.ts",
+    "agent:net": "tsx apps/agent/src/modules/net/cli.ts",
+    "agent:embedded": "tsx apps/agent/src/modules/embedded/cli.ts",
+    "agent:seclab": "tsx apps/agent/src/modules/seclab/cli.ts",
+    "agent:test": "tsx --test \"apps/agent/test/*.test.ts\"",
+    "agent:prodtest": "tsx apps/agent/scripts/production-test.ts",
+    "agent:typecheck": "tsc --noEmit -p apps/agent/tsconfig.json"
   },
   "dependencies": {
     "heic-decode": "^1.0.0",

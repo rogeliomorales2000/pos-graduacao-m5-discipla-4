@@ -1,0 +1,25 @@
+{
+  "name": "@m5/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "M5 Agent: runtime autônomo de código com modelo próprio, dataset multi-linguagem e módulos de redes, embarcados e lab de segurança.",
+  "main": "src/index.ts",
+  "scripts": {
+    "run": "tsx src/cli.ts run",
+    "chat": "tsx src/cli.ts chat",
+    "tools": "tsx src/cli.ts tools",
+    "train": "tsx src/model/train-cli.ts",
+    "dataset": "tsx src/datasets/generate.ts",
+    "index": "tsx src/index/cli.ts build",
+    "search": "tsx src/index/cli.ts search",
+    "net": "tsx src/modules/net/cli.ts",
+    "embedded": "tsx src/modules/embedded/cli.ts",
+    "seclab": "tsx src/modules/seclab/cli.ts",
+    "knowledge": "tsx src/knowledge/cli.ts",
+    "security-dataset": "tsx src/datasets/security-tune.ts",
+    "security-export": "tsx scripts/export-finetune.ts",
+    "test": "tsx --test \"test/*.test.ts\"",
+    "prodtest": "tsx scripts/production-test.ts"
+  }
+}

@@ -3,6 +3,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# runtime do agente: índice, sessões, auditoria, scope e kill switch
+.m5/
+
 .env
 .env.*
 
@@ -11,3 +14,9 @@ output.txt
 
 .DS_Store
 Thumbs.db
+
+# artefatos locais
+*.rar
+__pycache__/
+*.pyc
+_teste.py.txt

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "createdAt": "2026-11-03T22:11:00.196Z",
+  "format": "jsonl",
+  "defensive": true,
+  "total": 150,
+  "splits": {
+    "train": 136,
+    "validation": 7,
+    "test": 7
+  },
+  "ratios": {
+    "train": 0.9066666666666666,
+    "validation": 0.04666666666666667,
+    "test": 0.04666666666666667
+  },
+  "sources": {
+    "seed": 150
+  },
+  "sha256": {
+    "train": "55cf55ad97702b9749a6b274caafc36adb4b2059a3286c4ce153245041af2d7d",
+    "validation": "5a0f6febf6f1b25af46fa6be1b9f06227afe77e57579c95eed0b730e7bdc22cf",
+    "test": "29a5f838c7178987b88446cc9cb10f72b44fa39d1523b948850eab879bc22cd4"
+  }
+}
