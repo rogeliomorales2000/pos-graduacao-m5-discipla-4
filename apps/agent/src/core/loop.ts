@@ -193,6 +193,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let forcedWriteTried = false;
   let forceWriteRequested = false;
   let toolAdjusted = false;
+  let disabledToolCalls = 0;
   const disabledTools = new Set<string>();
   const callCounts = new Map<string, number>();
   const editCounts = new Map<string, number>();
@@ -212,6 +213,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     `${call.name}:${JSON.stringify(call.input)}`;
 
   const repeatedCall = (call: ReturnType<typeof parseModelOutput>["calls"][number]): boolean => {
+    // Uma tool já removida não deve voltar a acionar o loop-guard. O modelo
+    // recebe um erro claro de "TOOL DESATIVADA" e pode escolher outra tool.
+    if (disabledTools.has(call.name)) return false;
     const key = callSignature(call);
     const count = callCounts.get(key) ?? 0;
     if (count >= 2) return true;
@@ -349,6 +353,23 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     let writeSignature: string | null = null;
     const tool = toolMap.get(call.name);
     if (!tool) {
+      if (disabledTools.has(call.name)) {
+        disabledToolCalls += 1;
+        const available = specs.map((spec) => spec.name).join(", ") || "(nenhuma)";
+        const output =
+          `[TOOL DESATIVADA] ${call.name} foi removida após repetição. `
+          + `Use apenas: ${available}. Se você já tem informação suficiente, finalize com <final>.`;
+        session.pushMessage({ role: "tool", name: call.name, content: formatToolResult(call.name, { ok: false, output }) });
+        record({ kind: "tool", name: call.name, input: call.input, output, ok: false });
+        if (disabledToolCalls >= 3) {
+          stopReason =
+            `Não consegui avançar: o modelo insistiu em ${call.name}, que foi desativada por repetição. `
+            + "Informe o arquivo alvo exato ou reformule a tarefa com um caminho "
+            + "(ex.: apps/agent/src/arquivo.ts).";
+          record({ kind: "error", name: "tool-disabled-guard", output: stopReason, ok: false });
+        }
+        return false;
+      }
       if (targetMode) {
         return blockExplore(
           call,
@@ -453,6 +474,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       result = { ok: false, output: `Erro em ${call.name}: ${(err as Error).message}` };
     }
     const ms = Date.now() - callStart;
+    if (result.ok) disabledToolCalls = 0;
     if (writeSignature && result.ok) writeSignatures.add(writeSignature);
 
     // Patch com oldString errado e o erro mais comum do modelo pequeno. Se o

@@ -132,6 +132,29 @@ test("retry usa a intenção do turno atual, não o histórico de escrita", asyn
   assert.equal(fs.readFileSync(path.join(ws, "teste.py"), "utf8"), "print('ok')\n");
 });
 
+test("retry não repete tarefa sem alvo que caiu em loop-guard", async () => {
+  const ws = tempWorkspace();
+  const config = defaultConfig(ws);
+  config.verify.enabled = false;
+  config.limits.maxSteps = 8;
+  config.limits.maxTaskAttempts = 3;
+  const model = new ScriptedModel([
+    '<tool name="shell">{"command":"echo ok"}</tool>',
+  ]);
+
+  const result = await runAgentWithRetry({
+    task: "execute echo ok sem alvo de arquivo",
+    config,
+    model,
+    attempts: 3,
+  });
+
+  assert.equal(result.status, "error");
+  assert.equal(result.attempts, 1);
+  assert.ok(result.steps.some((step) => step.name === "loop-guard"));
+  assert.deepEqual(result.retryReasons, []);
+});
+
 test("isDissatisfied detecta reclamações sem confundir uma correção nova", () => {
   assert.equal(isDissatisfied("não estou satisfeito"), true);
   assert.equal(isDissatisfied("não é isso, refaça"), true);

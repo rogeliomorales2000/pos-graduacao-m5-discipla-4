@@ -16,7 +16,7 @@ import { loadConfig, serializeConfig } from "./core/config";
 import { runAgentWithRetry, isDissatisfied } from "./core/retry";
 import { Policy } from "./core/policy";
 import { AgentConfig } from "./core/types";
-import { extractTargetFiles, resolveChatTargets } from "./core/util";
+import { extractTargetFiles, needsTargetClarification, resolveChatTargets } from "./core/util";
 import { createModel } from "./model/factory";
 import { BASE_TOOLS, renderToolCatalog } from "./tools/registry";
 import { usbDevicesTool } from "./tools/usb";
@@ -100,6 +100,15 @@ async function runTask(task: string, config: AgentConfig, flags: Record<string, 
     process.exitCode = 2;
     return;
   }
+  const targetFiles = extractTargetFiles(task);
+  if (needsTargetClarification(task, targetFiles)) {
+    console.error(
+      "Qual arquivo? O pedido fala em \"o arquivo\", mas não cita um caminho. "
+      + "Informe o alvo exato, por exemplo: apps/agent/src/cli.ts.",
+    );
+    process.exitCode = 2;
+    return;
+  }
   const policy = new Policy(config);
   if (policy.stopped()) {
     console.error("Kill switch ativo: remova .m5/STOP para continuar.");
@@ -118,7 +127,7 @@ async function runTask(task: string, config: AgentConfig, flags: Record<string, 
       config,
       model,
       attempts: config.limits.maxTaskAttempts,
-      targetFiles: extractTargetFiles(task),
+      targetFiles,
       onStep: (step) => {
         if (!json) console.log(compactStep(step));
       },
@@ -156,6 +165,7 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
   let activeTargets: string[] = [];
   let lastTask = "";
   let lastTargets: string[] = [];
+  let pendingTask = "";
   const history: Array<{ role: "user" | "assistant"; content: string }> = [];
   console.log(`M5 Agent chat (${model.id}). /help para comandos, /sair para encerrar.`);
   try {
@@ -189,6 +199,16 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
         continue;
       }
 
+      // Se o turno anterior pediu o caminho do arquivo, a próxima linha pode ser
+      // apenas o alvo. Nesse caso, recuperamos a tarefa que ficou pendente.
+      if (pendingTask) {
+        const informedTargets = extractTargetFiles(line);
+        if (informedTargets.length > 0) {
+          line = `${pendingTask}\n\nArquivo alvo informado pelo usuário: ${informedTargets.join(", ")}`;
+        }
+        pendingTask = "";
+      }
+
       // O loop cria uma sessão nova por tarefa; no chat reutilizamos o id e
       // injetamos os turnos anteriores para manter a conversa coerente.
       const originalLine = line;
@@ -213,9 +233,6 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
         ? (explicitTargets.length > 0 ? explicitTargets : lastTargets)
         : resolveChatTargets(originalLine, activeTargets);
       if (explicitTargets.length > 0) activeTargets = explicitTargets;
-      const targetNote = targets.length
-        ? `ARQUIVO(S) ALVO: ${targets.join(", ")}\nNão altere outros arquivos.\n\n`
-        : "";
       const messageForModel = correction
         ? [
             "[CORREÇÃO SOLICITADA PELO USUÁRIO]",
@@ -225,6 +242,17 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
             effectiveLine,
           ].join("\n")
         : effectiveLine;
+      if (needsTargetClarification(messageForModel, targets)) {
+        pendingTask = messageForModel;
+        const question = "Qual arquivo? Cite o caminho exato (ex.: apps/agent/src/cli.ts).";
+        console.log(`\nagente> ${question}`);
+        history.push({ role: "user", content: originalLine }, { role: "assistant", content: question });
+        if (history.length > 8) history.splice(0, history.length - 8);
+        continue;
+      }
+      const targetNote = targets.length
+        ? `ARQUIVO(S) ALVO: ${targets.join(", ")}\nNão altere outros arquivos.\n\n`
+        : "";
       const task = history.length
         ? [
             targetNote,

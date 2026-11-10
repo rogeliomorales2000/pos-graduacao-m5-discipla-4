@@ -80,6 +80,17 @@ export function hasWriteIntent(text: string): boolean {
 }
 
 /**
+ * Detecta pedido de escrita que fala em "o arquivo" mas não cita um caminho.
+ * Nesses casos é melhor pedir o alvo do que deixar o modelo explorar o repo
+ * inteiro e cair no loop-guard.
+ */
+export function needsTargetClarification(text: string, targets: string[] = []): boolean {
+  if (targets.length > 0) return false;
+  if (!hasWriteIntent(text)) return false;
+  return /\b(?:o|ao|no|do|nesse|neste|naquele|esse|este|aquele|mesmo|tal)\s+arquivo\b|\barquivo\s+(?:atual|existente)\b|\bfile\b/i.test(text);
+}
+
+/**
  * Em chat, mantém o alvo do turno anterior quando o usuário usa "ele/esse
  * arquivo" ou um verbo de continuação sem repetir o caminho.
  */

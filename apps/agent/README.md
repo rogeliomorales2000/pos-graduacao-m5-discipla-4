@@ -58,7 +58,11 @@ O primeiro turno carrega o modelo no Ollama e pode demorar ~1 min em CPU; os
 seguintes reaproveitam o modelo carregado. `M5_CHAT_MAX_TOKENS` ajusta o limite
 de tokens (padrão 8192) e `M5_HTTP_TIMEOUT_MS` o timeout da chamada (padrão
 900000 ms; use `1800000` em tarefas longas). Se o modelo repetir a mesma tool de
-exploração, o agente remove essa tool do catálogo e tenta continuar.
+exploração, o agente remove essa tool do catálogo e tenta continuar; chamadas
+seguintes a ela recebem `TOOL DESATIVADA` em vez de encerrar no loop-guard. Se um
+pedido de escrita falar em "o arquivo" sem citar o caminho, o chat pergunta o
+alvo antes de iniciar e a próxima linha pode ser só o caminho. Tarefas sem alvo
+que caem em loop-guard não são repetidas automaticamente pelas 3 tentativas.
 
 ### Tentativas e modo corretivo
 

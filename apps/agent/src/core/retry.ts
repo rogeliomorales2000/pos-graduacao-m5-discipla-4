@@ -49,9 +49,16 @@ function buildRetryTask(
   ].filter(Boolean).join("\n");
 }
 
-function retryable(result: AgentRunResult): boolean {
+function retryable(result: AgentRunResult, expectsFile: boolean): boolean {
   if (result.status === "plan") return false;
-  return !REFUSAL.test(result.final);
+  if (REFUSAL.test(result.final)) return false;
+  if (
+    !expectsFile
+    && result.steps.some((step) => step.name === "loop-guard" || step.name === "tool-disabled-guard")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -140,7 +147,7 @@ export async function runAgentWithRetry(
     const delivered = result.status === "done" && (!expectsFile || changed.size > 0);
     if (delivered) break;
     if (attempt >= maxAttempts) break;
-    if (!retryable(result)) break;
+    if (!retryable(result, expectsFile)) break;
 
     const reason =
       `Tentativa ${attempt}/${maxAttempts}: status=${result.status}`

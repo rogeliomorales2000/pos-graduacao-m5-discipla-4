@@ -9,7 +9,7 @@ import { Policy, cidrContains } from "../src/core/policy";
 import { taskPrompt } from "../src/core/prompt";
 import { parseModelOutput, validateCall } from "../src/core/protocol";
 import { ModelAdapter, ModelRequest, ModelResponse } from "../src/core/types";
-import { extractTargetFiles, resolveChatTargets } from "../src/core/util";
+import { extractTargetFiles, needsTargetClarification, resolveChatTargets } from "../src/core/util";
 import { grepTool, matchGlob, patchFileTool, readFileTool, walkFiles, writeFileTool } from "../src/tools/fs";
 import { BASE_TOOLS } from "../src/tools/registry";
 import { normalizePowerShellCommand } from "../src/tools/shell";
@@ -226,7 +226,7 @@ test("loop interrompe chamadas repetidas", async () => {
   config.limits.maxSteps = 10;
   config.limits.maxToolCalls = 20;
   const model = new ScriptedModel([
-    '<tool name="list_dir">{"path":"."}</tool>',
+    '<tool name="shell">{"command":"echo ok"}</tool>',
   ]);
   const result = await runAgent({ task: "repita", config, model });
   assert.equal(result.status, "error");
@@ -268,6 +268,14 @@ test("extrai arquivos alvo citados na tarefa", () => {
     extractTargetFiles("corrija apps/agent/src/cli.ts e apps/agent/test/core.test.ts"),
     ["apps/agent/src/cli.ts", "apps/agent/test/core.test.ts"],
   );
+});
+
+test("pede o caminho quando a escrita cita 'o arquivo' sem alvo", () => {
+  assert.equal(needsTargetClarification("adicione ao arquivo como subir PTY", []), true);
+  assert.equal(needsTargetClarification("edite o arquivo atual", []), true);
+  assert.equal(needsTargetClarification("crie um arquivo novo", []), false);
+  assert.equal(needsTargetClarification("edite teste.ts", ["teste.ts"]), false);
+  assert.equal(needsTargetClarification("explique o arquivo", []), false);
 });
 
 test("taskPrompt prioriza o arquivo alvo em vez de explorar o repo", () => {
@@ -526,8 +534,9 @@ test("loop remove tool de exploração repetida e continua", async () => {
   fs.writeFileSync(path.join(ws, "a.txt"), "ok");
   const config = defaultConfig(ws);
   config.verify.enabled = false;
-  config.limits.maxSteps = 5;
+  config.limits.maxSteps = 6;
   const model = new ScriptedModel([
+    '<tool name="list_dir">{"path":"."}</tool>',
     '<tool name="list_dir">{"path":"."}</tool>',
     '<tool name="list_dir">{"path":"."}</tool>',
     '<tool name="list_dir">{"path":"."}</tool>',
@@ -538,6 +547,7 @@ test("loop remove tool de exploração repetida e continua", async () => {
 
   assert.equal(result.status, "done");
   assert.ok(result.steps.some((step) => step.name === "tool-adjust"));
+  assert.ok(result.steps.some((step) => step.name === "list_dir" && /TOOL DESATIVADA/.test(step.output ?? "")));
   assert.equal(result.steps.some((step) => step.name === "loop-guard"), false);
 });
 
