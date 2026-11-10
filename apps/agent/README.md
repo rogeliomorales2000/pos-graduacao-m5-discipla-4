@@ -57,7 +57,8 @@ npm run agent:ollama
 O primeiro turno carrega o modelo no Ollama e pode demorar ~1 min em CPU; os
 seguintes reaproveitam o modelo carregado. `M5_CHAT_MAX_TOKENS` ajusta o limite
 de tokens (padrão 8192) e `M5_HTTP_TIMEOUT_MS` o timeout da chamada (padrão
-300000 ms).
+900000 ms; use `1800000` em tarefas longas). Se o modelo repetir a mesma tool de
+exploração, o agente remove essa tool do catálogo e tenta continuar.
 
 O loop, as tools, as permissões e a verificação são sempre nossos; o adapter só
 troca o modelo.
@@ -69,7 +70,7 @@ troca o modelo.
 | `npm run agent -- run "<tarefa>"` | executa uma tarefa autônoma |
 | `npm run agent -- run "<tarefa>" --workspace <dir>` | executa contra outro repositório/diretório |
 | `npm run agent -- chat` | REPL com sessão contínua (`/usb`, `/tools`, `/help`) |
-| `npm run agent:ollama` | chat offline via Ollama + Qwen Coder 1.5B |
+| `npm run agent:ollama` | chat offline via Ollama + Qwen3 4B Instruct |
 | `npm run agent -- tools` | lista tools e assinaturas |
 | `npm run agent -- config --init` | cria `m5.agent.json` |
 | `npm run agent -- doctor` | diagnóstico do ambiente |

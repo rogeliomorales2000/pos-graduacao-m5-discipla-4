@@ -24,7 +24,7 @@ Workspace: ${options.workspace}
 Autonomia: ${options.autonomy}
 
 REGRAS
-1. ${options.targetWrite ? "O conteúdo do arquivo alvo já está no contexto. Não use read_file, glob, grep ou list_dir; vá direto para write_file/patch_file." : "Antes de editar, navegue e leia o código relevante (glob, grep, read_file)."}
+1. ${options.targetWrite ? "O conteúdo do arquivo alvo já está no contexto. Não use read_file, glob, grep ou list_dir; vá direto para write_file/patch_file. Não responda com <final> antes de alterar o alvo." : "Antes de editar, navegue e leia o código relevante (glob, grep, read_file)."}
 2. Faça a menor mudança correta; preserve estilo e contratos existentes.
 3. Depois de editar, verifique (build/teste) e corrija o que falhar.
 4. Nunca invente caminhos, APIs ou saídas de comando. Se uma tool devolver
@@ -66,7 +66,8 @@ export function taskPrompt(
         `ARQUIVO(S) ALVO: ${targets.join(", ")}`,
         "O conteúdo atual do alvo (ou a informação de que ele não existe) já está no contexto.",
         writeIntent
-          ? "Não use read_file novamente; o conteúdo já foi fornecido. Use write_file/patch_file agora."
+          ? "Não use read_file novamente; o conteúdo já foi fornecido. Use write_file/patch_file agora. "
+            + "Não responda com <final> antes de alterar o alvo; a próxima resposta deve ser apenas a chamada de ferramenta."
           : "Você pode usar read_file se precisar confirmar o conteúdo.",
         "Se não existir, a primeira ação deve ser write_file com esse caminho exato e o conteúdo completo.",
         "Se existir, edite com patch_file usando um trecho exato do conteúdo fornecido; use write_file só para reescrever tudo.",

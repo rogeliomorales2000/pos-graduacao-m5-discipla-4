@@ -33,6 +33,7 @@ const child = spawn(
       ...process.env,
       M5_MODEL_BASE_URL: process.env.M5_MODEL_BASE_URL ?? "http://127.0.0.1:11434/v1",
       M5_MODEL_NAME: process.env.M5_MODEL_NAME ?? "qwen3:4b-instruct-2507-q4_K_M",
+      M5_HTTP_TIMEOUT_MS: process.env.M5_HTTP_TIMEOUT_MS ?? "900000",
     },
   },
 );

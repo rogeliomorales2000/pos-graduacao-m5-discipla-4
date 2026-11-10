@@ -72,6 +72,20 @@ function safeRelative(workspace: string, target: string): string {
 const TARGET_WRITE_TOOLS = new Set(["write_file", "patch_file", "shell"]);
 const TARGET_READ_TOOLS = new Set(["read_file", "shell"]);
 const WRITE_TOOL_NAMES = new Set(["write_file", "patch_file"]);
+/** Verbos, substantivos e reclamações que indicam intenção de escrita. */
+const WRITE_INTENT =
+  /\b(crie|criar|criado|criada|criação|criacao|edite|editar|editado|editada|edição|edicao|altere|alterar|alterado|alterada|alteração|alteracao|modifique|modificar|modificado|modificada|modificação|modificacao|adicione|adicionar|adicionado|adicionada|inclua|incluir|incluído|incluido|implemente|implementar|implementado|implementada|implementação|implementacao|corrija|corrigir|corrigido|corrigida|salve|salvar|salvo|salva|grave|gravar|gravado|gravada|gere|gerar|gerado|gerada|atualize|atualizar|atualizado|atualizada|desenvolva|desenvolver|desenvolvido|desenvolvida|construa|construir|monte|montar|comece|começar|comecar|faça|faca|fazer|escreva|escrever|coloque|colocar|ajuste|ajustar|refatore|refatorar|melhore|melhorar|renomeie|renomear|remova|remover|continue|prossiga|editou|alterou|modificou|criou|salvou|gravou|gerou|atualizou|corrigiu|escreveu|colocou|ajustou|refatorou|melhorou|implementou)\b/i;
+/** Tools de exploração que podem ser desativadas quando o modelo entra em loop. */
+const EXPLORATION_TOOL_NAMES = new Set([
+  "repo_map",
+  "read_file",
+  "glob",
+  "grep",
+  "list_dir",
+  "search_code",
+  "find_symbols",
+  "index_build",
+]);
 
 function buildTargetContext(workspace: string, targets: string[]): string {
   if (targets.length === 0) return "";
@@ -116,15 +130,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   );
   const targetMode = targetFiles.size > 0;
   const intentText = options.retrievalQuery ?? task;
-  const taskWantsWrite =
-    /\b(crie|criar|edite|editar|altere|alterar|adicione|adicionar|implemente|implementar|corrija|corrigir|salve|salvar|grave|gravar|gere|gerar|modifique|modificar|atualize|atualizar)\b/i.test(intentText);
+  const taskWantsWrite = WRITE_INTENT.test(intentText);
   const targetToolNames = taskWantsWrite ? TARGET_WRITE_TOOLS : TARGET_READ_TOOLS;
   const targetToolSet = targetMode
     ? tools.filter((tool) => targetToolNames.has(tool.spec.name))
     : tools;
   const activeTools = targetToolSet.length > 0 ? targetToolSet : tools;
   const toolMap = new Map(activeTools.map((tool) => [tool.spec.name, tool]));
-  const specs = activeTools.map((tool) => tool.spec);
+  let specs = activeTools.map((tool) => tool.spec);
 
   const toolContext: ToolContext = {
     workspace: config.workspace,
@@ -182,6 +195,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let nudgedEmptyTarget = false;
   let forcedWriteTried = false;
   let forceWriteRequested = false;
+  let toolAdjusted = false;
+  const disabledTools = new Set<string>();
   const callCounts = new Map<string, number>();
   const editCounts = new Map<string, number>();
   const writeSignatures = new Set<string>();
@@ -211,6 +226,33 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     const full: StepRecord = { index: session.steps.length, ts: now(), ...step };
     session.recordStep(full);
     options.onStep?.(full);
+  };
+
+  /**
+   * Em vez de encerrar na primeira repetição, remove a tool de exploração que
+   * travou o modelo e dá mais um turno com o catálogo ajustado. Em tarefa de
+   * escrita com alvo, a tentativa focada de escrita continua sendo prioritária.
+   */
+  const disableExplorationTool = (name: string): boolean => {
+    if (targetMode && taskWantsWrite) return false;
+    if (!EXPLORATION_TOOL_NAMES.has(name) || disabledTools.has(name)) return false;
+    disabledTools.add(name);
+    specs = specs.filter((spec) => spec.name !== name);
+    toolMap.delete(name);
+    session.pushMessage({
+      role: "user",
+      content:
+        `[TOOLS] A ferramenta ${name} foi desativada porque o modelo repetiu a mesma chamada. `
+        + "Continue a tarefa com as ferramentas restantes; não repita a chamada removida.",
+    });
+    record({
+      kind: "error",
+      name: "tool-adjust",
+      output: `Ferramenta ${name} desativada após repetição.`,
+      ok: false,
+    });
+    toolAdjusted = true;
+    return true;
   };
 
   const blockExplore = (
@@ -600,8 +642,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       if (turn.calls.length === 0) {
         const candidate = turn.final || "(modelo não produziu resposta final)";
         const claimsWrite =
-          /\b(criei|criado|criada|salvei|salvo|salva|gravei|gravado|gerado|gerada|alterei|alterado|alterada|modifiquei|modificado|editado|editada|atualizei|atualizado|implementei|implementado|corrigi|corrigido|edição|alteração|modificação|criação|implementação|patch_file|write_file)\b/i.test(candidate);
-        const deniesWrite = /\b(nada|nenhum|nenhuma|não|nao)\b/i.test(candidate);
+          /\b(criei|criado|criada|salvei|salvo|salva|gravei|gravado|gerado|gerada|alterei|alterado|alterada|modifiquei|modificado|editado|editada|atualizei|atualizado|implementei|implementado|corrigi|corrigido|edição|alteração|modificação|criação|implementação|mudança|atualização|gravação|salvamento|patch_file|write_file)\b/i.test(candidate);
+        const deniesWrite =
+          /\b(não|nao)\s+(alterei|editei|modifiquei|criei|salvei|gravei|consegui|foi\s+(possível|possivel|feita|feito|alterado|alterada|editado|editada|criado|criada|salvo|salva|gravado|gravada|modificado|modificada))\b/i.test(candidate)
+          || /\b(nada|nenhum|nenhuma)\s+(foi|arquivo|alteração|alteracao|mudança|mudanca)\b/i.test(candidate)
+          || /\b(nada|nenhum|nenhuma)\s+(criado|criada|alterado|alterada|editado|editada|modificado|modificada|salvo|salva|gravado|gravada|feito|feita)\b/i.test(candidate)
+          || /\bsem\s+(alteração|alteracao|alterações|alteracoes|mudança|mudanca|mudanças|mudancas|modificação|modificacao|modificações|modificacoes)\b/i.test(candidate);
 
         if (
           targetMode
@@ -648,6 +694,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
             finishForcedWrite();
             return;
           }
+          if (disableExplorationTool(call.name)) break;
           const detail = `${call.name} ${JSON.stringify(call.input).slice(0, 200)}`;
           const output = `Chamada repetida bloqueada: ${detail}`;
           record({ kind: "error", name: "loop-guard", output, ok: false });
@@ -667,6 +714,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           final = stopReason;
           return;
         }
+      }
+      if (toolAdjusted) {
+        toolAdjusted = false;
+        continue;
       }
       if (forceWriteRequested && !stopReason && !forceDone) {
         forceWriteRequested = false;

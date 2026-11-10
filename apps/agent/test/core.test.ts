@@ -498,6 +498,49 @@ test("modo alvo falha quando o modelo insiste em final falso sem escrever", asyn
   assert.equal(fs.existsSync(path.join(ws, "teste.py")), false);
 });
 
+test("modo alvo reconhece 'comece implementacao' como intenção de escrita", async () => {
+  const ws = tempWorkspace();
+  const config = defaultConfig(ws);
+  config.verify.enabled = false;
+  config.limits.maxSteps = 4;
+  const model = new ScriptedModel([
+    "<final>Arquivo não contém código funcional; o conteúdo foi atualizado.</final>",
+    '<tool name="write_file">{"path":"teste.py","content":"print(\'novo\')\\n"}</tool>',
+    "<final>implementado</final>",
+  ]);
+
+  const result = await runAgent({
+    task: "no arquivo teste.py comece implementacao de um esboco",
+    config,
+    model,
+    targetFiles: ["teste.py"],
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(fs.readFileSync(path.join(ws, "teste.py"), "utf8"), "print('novo')\n");
+  assert.ok(result.steps.some((step) => step.name === "mock:scripted:forced-write"));
+});
+
+test("loop remove tool de exploração repetida e continua", async () => {
+  const ws = tempWorkspace();
+  fs.writeFileSync(path.join(ws, "a.txt"), "ok");
+  const config = defaultConfig(ws);
+  config.verify.enabled = false;
+  config.limits.maxSteps = 5;
+  const model = new ScriptedModel([
+    '<tool name="list_dir">{"path":"."}</tool>',
+    '<tool name="list_dir">{"path":"."}</tool>',
+    '<tool name="list_dir">{"path":"."}</tool>',
+    "<final>analisado</final>",
+  ]);
+
+  const result = await runAgent({ task: "analise o diretorio", config, model });
+
+  assert.equal(result.status, "done");
+  assert.ok(result.steps.some((step) => step.name === "tool-adjust"));
+  assert.equal(result.steps.some((step) => step.name === "loop-guard"), false);
+});
+
 test("loop bloqueia escrita fora do arquivo alvo", async () => {
   const ws = tempWorkspace();
   const config = defaultConfig(ws);

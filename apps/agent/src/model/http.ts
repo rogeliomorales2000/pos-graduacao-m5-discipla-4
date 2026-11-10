@@ -22,7 +22,7 @@ export class HttpModelAdapter implements ModelAdapter {
     const apiKey = this.options.apiKeyEnv ? process.env[this.options.apiKeyEnv] : undefined;
     const url = `${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 120_000);
+    const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 900_000);
 
     try {
       const response = await fetch(url, {
