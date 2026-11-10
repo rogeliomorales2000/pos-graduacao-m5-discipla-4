@@ -247,10 +247,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         + "Continue a tarefa com as ferramentas restantes; não repita a chamada removida.",
     });
     record({
-      kind: "error",
+      kind: "tool",
       name: "tool-adjust",
       output: `Ferramenta ${name} desativada após repetição.`,
-      ok: false,
+      ok: true,
     });
     toolAdjusted = true;
     return true;
