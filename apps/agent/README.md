@@ -60,6 +60,19 @@ de tokens (padrão 8192) e `M5_HTTP_TIMEOUT_MS` o timeout da chamada (padrão
 900000 ms; use `1800000` em tarefas longas). Se o modelo repetir a mesma tool de
 exploração, o agente remove essa tool do catálogo e tenta continuar.
 
+### Tentativas e modo corretivo
+
+Cada tarefa tem até 3 tentativas totais (`M5_TASK_ATTEMPTS`, ou
+`M5_TASK_RETRIES` como alias; `--attempts N` no CLI). Se uma tentativa terminar
+com erro, timeout, limite de passos ou `done` sem alterar o arquivo alvo, o
+agente reinicia com um relatório do erro anterior, temperatura menor e instrução
+para usar o caminho exato. O limite é sempre finito: ao esgotar, o resultado é
+um erro honesto, nunca um sucesso inventado.
+
+No chat, `/corrigir` refaz a última tarefa. Frases como "não estou satisfeito",
+"não alterou o arquivo" ou "não é isso" ativam o mesmo modo corretivo
+automaticamente, mantendo o alvo anterior.
+
 O loop, as tools, as permissões e a verificação são sempre nossos; o adapter só
 troca o modelo.
 
@@ -69,7 +82,7 @@ troca o modelo.
 | --- | --- |
 | `npm run agent -- run "<tarefa>"` | executa uma tarefa autônoma |
 | `npm run agent -- run "<tarefa>" --workspace <dir>` | executa contra outro repositório/diretório |
-| `npm run agent -- chat` | REPL com sessão contínua (`/usb`, `/tools`, `/help`) |
+| `npm run agent -- chat` | REPL com sessão contínua (`/usb`, `/tools`, `/corrigir`, `/help`) |
 | `npm run agent:ollama` | chat offline via Ollama + Qwen3 4B Instruct |
 | `npm run agent -- tools` | lista tools e assinaturas |
 | `npm run agent -- config --init` | cria `m5.agent.json` |

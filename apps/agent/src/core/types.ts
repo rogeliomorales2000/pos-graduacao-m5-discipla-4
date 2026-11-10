@@ -115,6 +115,8 @@ export interface AgentConfig {
     maxToolCalls: number;
     maxWallClockMs: number;
     maxToolOutputChars: number;
+    /** Tentativas totais de uma tarefa, incluindo a primeira. */
+    maxTaskAttempts: number;
   };
   verify: {
     commands: string[];

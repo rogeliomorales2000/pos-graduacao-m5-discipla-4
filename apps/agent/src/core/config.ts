@@ -37,6 +37,7 @@ export function defaultConfig(workspace = process.cwd()): AgentConfig {
       maxToolCalls: 120,
       maxWallClockMs: 30 * 60_000,
       maxToolOutputChars: 24_000,
+      maxTaskAttempts: 3,
     },
     verify: {
       enabled: true,
@@ -105,6 +106,15 @@ export function loadConfig(workspace = process.cwd(), overrides: Partial<AgentCo
     config.model.name = process.env.M5_MODEL_NAME || config.model.name;
   }
   if (process.env.M5_MODEL_PATH) config.model.path = process.env.M5_MODEL_PATH;
+  const attemptsRaw = process.env.M5_TASK_ATTEMPTS ?? process.env.M5_TASK_RETRIES;
+  if (attemptsRaw) {
+    const attempts = Number(attemptsRaw);
+    if (Number.isFinite(attempts) && attempts >= 1) {
+      config.limits.maxTaskAttempts = Math.floor(attempts);
+    } else {
+      warnings.push(`M5_TASK_ATTEMPTS inválido: ${attemptsRaw}`);
+    }
+  }
 
   // Caminhos relativos no arquivo são resolvidos a partir do workspace.
   for (const key of ["scopeFile", "auditFile"] as const) {

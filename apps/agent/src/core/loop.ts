@@ -7,7 +7,7 @@ import { formatToolResult, parseModelOutput, validateCall } from "./protocol";
 import { systemPrompt, taskPrompt } from "./prompt";
 import { Session } from "./session";
 import { AgentConfig, ChatMessage, ModelAdapter, RunResult, StepRecord, Tool, ToolContext } from "./types";
-import { truncate } from "./util";
+import { hasWriteIntent, truncate } from "./util";
 import { runVerification, summarizeVerification } from "./verify";
 import { BASE_TOOLS } from "../tools/registry";
 
@@ -72,9 +72,6 @@ function safeRelative(workspace: string, target: string): string {
 const TARGET_WRITE_TOOLS = new Set(["write_file", "patch_file", "shell"]);
 const TARGET_READ_TOOLS = new Set(["read_file", "shell"]);
 const WRITE_TOOL_NAMES = new Set(["write_file", "patch_file"]);
-/** Verbos, substantivos e reclamações que indicam intenção de escrita. */
-const WRITE_INTENT =
-  /\b(crie|criar|criado|criada|criação|criacao|edite|editar|editado|editada|edição|edicao|altere|alterar|alterado|alterada|alteração|alteracao|modifique|modificar|modificado|modificada|modificação|modificacao|adicione|adicionar|adicionado|adicionada|inclua|incluir|incluído|incluido|implemente|implementar|implementado|implementada|implementação|implementacao|corrija|corrigir|corrigido|corrigida|salve|salvar|salvo|salva|grave|gravar|gravado|gravada|gere|gerar|gerado|gerada|atualize|atualizar|atualizado|atualizada|desenvolva|desenvolver|desenvolvido|desenvolvida|construa|construir|monte|montar|comece|começar|comecar|faça|faca|fazer|escreva|escrever|coloque|colocar|ajuste|ajustar|refatore|refatorar|melhore|melhorar|renomeie|renomear|remova|remover|continue|prossiga|editou|alterou|modificou|criou|salvou|gravou|gerou|atualizou|corrigiu|escreveu|colocou|ajustou|refatorou|melhorou|implementou)\b/i;
 /** Tools de exploração que podem ser desativadas quando o modelo entra em loop. */
 const EXPLORATION_TOOL_NAMES = new Set([
   "repo_map",
@@ -130,7 +127,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   );
   const targetMode = targetFiles.size > 0;
   const intentText = options.retrievalQuery ?? task;
-  const taskWantsWrite = WRITE_INTENT.test(intentText);
+  const taskWantsWrite = hasWriteIntent(intentText);
   const targetToolNames = taskWantsWrite ? TARGET_WRITE_TOOLS : TARGET_READ_TOOLS;
   const targetToolSet = targetMode
     ? tools.filter((tool) => targetToolNames.has(tool.spec.name))

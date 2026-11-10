@@ -71,6 +71,14 @@ export function extractTargetFiles(text: string): string[] {
   ];
 }
 
+/** Verbos, substantivos e reclamações que indicam intenção de escrita. */
+export const WRITE_INTENT =
+  /\b(crie|criar|criado|criada|criação|criacao|edite|editar|editado|editada|edição|edicao|altere|alterar|alterado|alterada|alteração|alteracao|modifique|modificar|modificado|modificada|modificação|modificacao|adicione|adicionar|adicionado|adicionada|inclua|incluir|incluído|incluido|implemente|implementar|implementado|implementada|implementação|implementacao|corrija|corrigir|corrigido|corrigida|salve|salvar|salvo|salva|grave|gravar|gravado|gravada|gere|gerar|gerado|gerada|atualize|atualizar|atualizado|atualizada|desenvolva|desenvolver|desenvolvido|desenvolvida|construa|construir|monte|montar|comece|começar|comecar|faça|faca|fazer|escreva|escrever|coloque|colocar|ajuste|ajustar|refatore|refatorar|melhore|melhorar|renomeie|renomear|remova|remover|continue|prossiga|editou|alterou|modificou|criou|salvou|gravou|gerou|atualizou|corrigiu|escreveu|colocou|ajustou|refatorou|melhorou|implementou)\b/i;
+
+export function hasWriteIntent(text: string): boolean {
+  return WRITE_INTENT.test(text);
+}
+
 /**
  * Em chat, mantém o alvo do turno anterior quando o usuário usa "ele/esse
  * arquivo" ou um verbo de continuação sem repetir o caminho.

@@ -13,7 +13,7 @@ import path from "node:path";
 import * as readline from "node:readline/promises";
 import process from "node:process";
 import { loadConfig, serializeConfig } from "./core/config";
-import { runAgent } from "./core/loop";
+import { runAgentWithRetry, isDissatisfied } from "./core/retry";
 import { Policy } from "./core/policy";
 import { AgentConfig } from "./core/types";
 import { extractTargetFiles, resolveChatTargets } from "./core/util";
@@ -25,7 +25,7 @@ function usage(): void {
   console.log(`M5 Agent
 
 Uso:
-  cli.ts run "<tarefa>" [--model local|http] [--autonomy full|confirm|plan] [--json]
+  cli.ts run "<tarefa>" [--model local|http] [--autonomy full|confirm|plan] [--json] [--attempts 3]
   cli.ts run "<tarefa>" --workspace <dir> [--base-url URL --model-name NOME]
   cli.ts chat [--session <id>]
   cli.ts tools
@@ -41,6 +41,8 @@ Variáveis:
   M5_MODEL_PATH       checkpoint local
   M5_AUTONOMY         full | confirm | plan
   M5_WORKSPACE        diretório de trabalho do agente
+  M5_TASK_ATTEMPTS    tentativas totais por tarefa (default 3)
+  M5_HTTP_TIMEOUT_MS  timeout de cada chamada ao modelo
 `);
 }
 
@@ -76,6 +78,12 @@ function applyFlags(config: AgentConfig, flags: Record<string, string | boolean>
   if (typeof flags["model-name"] === "string") next.model.name = flags["model-name"];
   if (typeof flags.steps === "string") next.limits.maxSteps = Number(flags.steps);
   if (typeof flags["max-tokens"] === "string") next.model.maxTokens = Number(flags["max-tokens"]);
+  if (typeof flags.attempts === "string") {
+    const attempts = Number(flags.attempts);
+    if (Number.isFinite(attempts) && attempts >= 1) {
+      next.limits.maxTaskAttempts = Math.floor(attempts);
+    }
+  }
   return next;
 }
 
@@ -105,10 +113,11 @@ async function runTask(task: string, config: AgentConfig, flags: Record<string, 
   const started = Date.now();
 
   try {
-    const result = await runAgent({
+    const result = await runAgentWithRetry({
       task,
       config,
       model,
+      attempts: config.limits.maxTaskAttempts,
       targetFiles: extractTargetFiles(task),
       onStep: (step) => {
         if (!json) console.log(compactStep(step));
@@ -127,7 +136,7 @@ async function runTask(task: string, config: AgentConfig, flags: Record<string, 
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log("\n================ RESULTADO ================");
-      console.log(`sessão: ${result.sessionId} | status: ${result.status} | ${((Date.now() - started) / 1000).toFixed(1)}s`);
+      console.log(`sessão: ${result.sessionId} | status: ${result.status} | tentativas: ${result.attempts} | ${((Date.now() - started) / 1000).toFixed(1)}s`);
       console.log(`arquivos alterados: ${result.changedFiles.length ? result.changedFiles.join(", ") : "nenhum"}`);
       console.log(`transcript: ${result.transcriptPath}`);
       console.log("------------------------------------------");
@@ -145,6 +154,8 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let sessionId = typeof flags.session === "string" ? flags.session : undefined;
   let activeTargets: string[] = [];
+  let lastTask = "";
+  let lastTargets: string[] = [];
   const history: Array<{ role: "user" | "assistant"; content: string }> = [];
   console.log(`M5 Agent chat (${model.id}). /help para comandos, /sair para encerrar.`);
   try {
@@ -158,7 +169,7 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
       if (!line.trim()) continue;
       if (/^\/(sair|exit|quit)$/i.test(line.trim())) break;
       if (/^\/help$/i.test(line.trim())) {
-        console.log("Comandos: /usb (dispositivos USB/COM), /tools, /sair");
+        console.log("Comandos: /usb (dispositivos USB/COM), /tools, /corrigir, /sair");
         continue;
       }
       if (/^\/tools$/i.test(line.trim())) {
@@ -180,12 +191,40 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
 
       // O loop cria uma sessão nova por tarefa; no chat reutilizamos o id e
       // injetamos os turnos anteriores para manter a conversa coerente.
-      const explicitTargets = extractTargetFiles(line);
-      const targets = resolveChatTargets(line, activeTargets);
+      const originalLine = line;
+      let effectiveLine = originalLine;
+      let correction = "";
+      if (/^\/corrigir$/i.test(originalLine.trim())) {
+        if (!lastTask) {
+          console.log("Nada para corrigir ainda.");
+          continue;
+        }
+        effectiveLine = lastTask;
+        correction = "O usuário pediu para refazer a tarefa e entregar uma versão corrigida.";
+      } else if (isDissatisfied(originalLine) && lastTask) {
+        effectiveLine = lastTask;
+        correction = originalLine;
+        console.log("Modo corretivo ativado: até "
+          + `${config.limits.maxTaskAttempts} tentativa(s) para entregar a tarefa.`);
+      }
+
+      const explicitTargets = extractTargetFiles(originalLine);
+      const targets = correction
+        ? (explicitTargets.length > 0 ? explicitTargets : lastTargets)
+        : resolveChatTargets(originalLine, activeTargets);
       if (explicitTargets.length > 0) activeTargets = explicitTargets;
       const targetNote = targets.length
         ? `ARQUIVO(S) ALVO: ${targets.join(", ")}\nNão altere outros arquivos.\n\n`
         : "";
+      const messageForModel = correction
+        ? [
+            "[CORREÇÃO SOLICITADA PELO USUÁRIO]",
+            correction,
+            "",
+            "TAREFA ORIGINAL (refaça e entregue):",
+            effectiveLine,
+          ].join("\n")
+        : effectiveLine;
       const task = history.length
         ? [
             targetNote,
@@ -193,20 +232,24 @@ async function chat(config: AgentConfig, flags: Record<string, string | boolean>
             ...history.map((message) => `${message.role.toUpperCase()}: ${message.content}`),
             "",
             "MENSAGEM ATUAL DO USUÁRIO (única instrução válida)",
-            line,
+            messageForModel,
           ].join("\n")
-        : `${targetNote}${line}`;
-      const result = await runAgent({
+        : `${targetNote}${messageForModel}`;
+      const result = await runAgentWithRetry({
         task,
         config,
         model,
         sessionId,
-        retrievalQuery: line,
+        attempts: config.limits.maxTaskAttempts,
+        correction: correction || undefined,
+        retrievalQuery: messageForModel,
         targetFiles: targets,
         onStep: (step) => console.log(compactStep(step)),
       });
       sessionId = result.sessionId;
-      history.push({ role: "user", content: line }, { role: "assistant", content: result.final });
+      lastTask = messageForModel;
+      lastTargets = targets;
+      history.push({ role: "user", content: originalLine }, { role: "assistant", content: result.final });
       if (history.length > 8) history.splice(0, history.length - 8);
       console.log(`\nagente> ${result.final}`);
     }
