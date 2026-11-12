@@ -77,6 +77,20 @@ No chat, `/corrigir` refaz a última tarefa. Frases como "não estou satisfeito"
 "não alterou o arquivo" ou "não é isso" ativam o mesmo modo corretivo
 automaticamente, mantendo o alvo anterior.
 
+### Barreira de qualidade da geração
+
+Antes de aceitar um `write_file` de código, o agente extrai os requisitos
+técnicos explícitos da tarefa (PTY, SSH, FTP/SFTP, socket, buffer dinâmico,
+offsets, memória/instrumentação, TLS e autenticação) e verifica se o conteúdo
+tem implementação real para cada um. Comentários são ignorados nessa checagem.
+Pedidos com dois ou mais requisitos também precisam de um mínimo de código, o
+que rejeita stubs como "só abre um socket e fecha". Se o conteúdo for um stub,
+não cobrir os requisitos ou tiver sintaxe Python inválida, a escrita é bloqueada
+e o modelo recebe a lista do que falta para reescrever. A verificação final
+também roda `ast.parse` nos arquivos Python alterados. Se o modelo não conseguir
+cumprir os requisitos após a tentativa focada, o resultado é um erro honesto,
+não um arquivo mínimo apresentado como solução.
+
 O loop, as tools, as permissões e a verificação são sempre nossos; o adapter só
 troca o modelo.
 

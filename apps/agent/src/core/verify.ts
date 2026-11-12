@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AgentConfig } from "./types";
 import { runShell } from "../tools/shell";
+import { checkPythonSyntax } from "./requirements";
 
 export interface VerifyStepResult {
   command: string;
@@ -57,20 +58,45 @@ export function detectVerifyCommands(root: string): string[] {
 
 export async function runVerification(
   config: AgentConfig,
-  options: { changed: boolean; signal?: AbortSignal } = { changed: true },
+  options: { changed: boolean; changedFiles?: string[]; signal?: AbortSignal } = { changed: true },
 ): Promise<VerifyOutcome> {
   if (!config.verify.enabled) return { ran: false, ok: true, steps: [] };
   const commands = config.verify.commands.length
     ? config.verify.commands
     : detectVerifyCommands(config.workspace);
-  if (commands.length === 0) return { ran: false, ok: true, steps: [] };
+  const steps: VerifyStepResult[] = [];
+
+  // Sintaxe de arquivos alterados que não passam pelo build do projeto.
+  // Hoje cobre Python; é barato e pega o erro clássico de modelo pequeno
+  // (ex.: `if __name__ "==" "__main__":`) antes de declarar sucesso.
+  for (const file of options.changedFiles ?? []) {
+    if (!/\.pyw?$/i.test(file)) continue;
+    const full = path.resolve(config.workspace, file);
+    if (!fs.existsSync(full)) continue;
+    const check = checkPythonSyntax(fs.readFileSync(full, "utf8"));
+    if (!check.available) continue;
+    steps.push({
+      command: `python ast.parse ${file}`,
+      code: check.error ? 1 : 0,
+      ok: !check.error,
+      output: check.error ? check.error.slice(0, 4_000) : "sintaxe OK",
+      durationMs: 0,
+    });
+    if (check.error) break;
+  }
+  if (steps.some((step) => !step.ok)) {
+    return { ran: true, ok: false, steps };
+  }
+
+  if (commands.length === 0) {
+    return { ran: steps.length > 0, ok: true, steps };
+  }
 
   // Evita rodar build/test quando nada mudou (economiza minutos no CPU).
   if (!options.changed && config.verify.commands.length === 0) {
     return { ran: false, ok: true, steps: [] };
   }
 
-  const steps: VerifyStepResult[] = [];
   for (const command of commands) {
     const result = await runShell({
       command,

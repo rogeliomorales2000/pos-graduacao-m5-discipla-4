@@ -5,6 +5,7 @@ import { buildRepoMap, renderContextChunks, retrieveContext } from "./context";
 import { Policy, PolicyDecision } from "./policy";
 import { formatToolResult, parseModelOutput, validateCall } from "./protocol";
 import { systemPrompt, taskPrompt } from "./prompt";
+import { requirementLabels, validateGeneratedContent } from "./requirements";
 import { Session } from "./session";
 import { AgentConfig, ChatMessage, ModelAdapter, RunResult, StepRecord, Tool, ToolContext } from "./types";
 import { hasWriteIntent, truncate } from "./util";
@@ -128,6 +129,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const targetMode = targetFiles.size > 0;
   const intentText = options.retrievalQuery ?? task;
   const taskWantsWrite = hasWriteIntent(intentText);
+  const requirements = requirementLabels(intentText);
   const targetToolNames = taskWantsWrite ? TARGET_WRITE_TOOLS : TARGET_READ_TOOLS;
   const targetToolSet = targetMode
     ? tools.filter((tool) => targetToolNames.has(tool.spec.name))
@@ -174,6 +176,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         extraContext || undefined,
         requestedTargets,
         targetMode && taskWantsWrite,
+        requirements,
       ),
     },
   ];
@@ -428,6 +431,18 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       }
       if (call.name === "write_file") {
         const content = typeof call.input.content === "string" ? call.input.content : "";
+        const quality = validateGeneratedContent(intentText, rawPath, content);
+        if (quality) {
+          const requirementNote = requirements.length
+            ? ` Requisitos: ${requirements.join(", ")}.`
+            : "";
+          return blockWrite(
+            call,
+            `[QUALIDADE] ${quality.message}. `
+            + "Reescreva o arquivo completo com implementação real, sem TODO/pass/placeholder."
+            + requirementNote,
+          );
+        }
         writeSignature = `${key}:${content}`;
         if (writeSignatures.has(writeSignature)) {
           const output = `[REPETIDO] ${rawPath} já foi escrito com esse mesmo conteúdo. Finalize ou altere o conteúdo.`;
@@ -439,6 +454,33 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
             forceFinal = `Arquivo ${rawPath} criado/alterado com sucesso. A escrita idêntica repetida foi ignorada.`;
           }
           return false;
+        }
+      }
+      if (call.name === "patch_file" && fs.existsSync(fullPath)) {
+        const oldString = String(call.input.oldString ?? "");
+        const newString = String(call.input.newString ?? "");
+        const replaceAll = call.input.replaceAll === true;
+        if (oldString && oldString !== newString) {
+          const original = fs.readFileSync(fullPath, "utf8").replace(/\r\n/g, "\n");
+          const normalizedOld = oldString.replace(/\r\n/g, "\n");
+          const occurrences = original.split(normalizedOld).length - 1;
+          if (occurrences > 0 && (replaceAll || occurrences === 1)) {
+            const patched = replaceAll
+              ? original.split(normalizedOld).join(newString.replace(/\r\n/g, "\n"))
+              : original.replace(normalizedOld, newString.replace(/\r\n/g, "\n"));
+            const quality = validateGeneratedContent(intentText, rawPath, patched);
+            if (quality) {
+              const requirementNote = requirements.length
+                ? ` Requisitos: ${requirements.join(", ")}.`
+                : "";
+              return blockWrite(
+                call,
+                `[QUALIDADE] ${quality.message}. `
+                + "O patch deixaria o arquivo incompleto. Use write_file com a implementação completa."
+                + requirementNote,
+              );
+            }
+          }
         }
       }
     }
@@ -597,13 +639,18 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           "Troque CONTEUDO COMPLETO AQUI pelo codigo final pedido.",
           "Se o alvo nao existe, use write_file com o conteudo completo.",
           "Se o alvo existe, prefira write_file para reescrever o arquivo inteiro com o conteudo final.",
+          "Nao copie o conteudo atual se ele nao implementa todos os requisitos; reescreva de verdade.",
+          requirements.length
+            ? `REQUISITOS OBRIGATORIOS: ${requirements.join(", ")}. Implemente cada um com codigo real, sem stub/TODO/pass.`
+            : "",
           "Use patch_file apenas se o oldString existir exatamente no CONTEUDO ATUAL. Se um patch falhar, nao o repita: use write_file.",
           "Nao use read_file, glob, grep, list_dir ou shell.",
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
       },
       {
         role: "user",
-        content: `${task}\n\n${targetContext}\n\nACAO OBRIGATORIA: escreva agora no alvo usando write_file ou patch_file.`,
+        content: `${task}\n\n${targetContext}\n\nACAO OBRIGATORIA: escreva agora no alvo usando write_file ou patch_file.`
+          + (requirements.length ? `\nImplemente todos os requisitos: ${requirements.join(", ")}.` : ""),
       },
     ];
 
@@ -764,7 +811,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
   // Verificação por build/teste, com uma rodada de reparo automática.
   const changed = [...session.changedFiles];
-  let verify = await runVerification(config, { changed: changed.length > 0 });
+  let verify = await runVerification(config, { changed: changed.length > 0, changedFiles: changed });
   if (verify.ran) {
     record({
       kind: "verify",
@@ -783,7 +830,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     status = "max-steps";
     final = "";
     await drive();
-    verify = await runVerification(config, { changed: true });
+    verify = await runVerification(config, { changed: true, changedFiles: changed });
     if (verify.ran) {
       record({
         kind: "verify",

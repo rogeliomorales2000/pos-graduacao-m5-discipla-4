@@ -506,6 +506,57 @@ test("modo alvo falha quando o modelo insiste em final falso sem escrever", asyn
   assert.equal(fs.existsSync(path.join(ws, "teste.py")), false);
 });
 
+test("qualidade bloqueia stub raso que não cobre requisitos do alvo", async () => {
+  const ws = tempWorkspace();
+  const config = defaultConfig(ws);
+  config.verify.enabled = false;
+  config.limits.maxSteps = 4;
+  config.limits.maxToolCalls = 8;
+  const stub = '<tool name="write_file">{"path":"teste.py","content":"import socket\\nimport sys\\n\\ndef main():\\n    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # SSH PTY FTP buffer offset memoria\\n    sock.close()\\n\\nif __name__ == \\"__main__\\":\\n    main()\\n"}</tool>';
+  const model = new ScriptedModel([stub, stub, stub, stub]);
+  const result = await runAgent({
+    task:
+      "adicionar ao arquivo como subir PTY em SSH FTP em SOCKET, adicionar tambem "
+      + "leitura de buffer dinamico e percorrer a memoria mapeando offsets durante a execucao",
+    config,
+    model,
+    targetFiles: ["teste.py"],
+  });
+
+  assert.equal(fs.existsSync(path.join(ws, "teste.py")), false);
+  const write = result.steps.find((step) => step.name === "write_file");
+  assert.equal(write?.ok, false);
+  assert.match(write?.output ?? "", /QUALIDADE/);
+  assert.match(write?.output ?? "", /PTY/);
+  assert.notEqual(result.status, "done");
+});
+
+test("qualidade bloqueia patch que deixaria implícito um requisito", async () => {
+  const ws = tempWorkspace();
+  const original = "import socket\n\ndef main():\n    return socket\n";
+  fs.writeFileSync(path.join(ws, "teste.py"), original);
+  const config = defaultConfig(ws);
+  config.verify.enabled = false;
+  config.limits.maxSteps = 4;
+  config.limits.maxToolCalls = 8;
+  const patch = '<tool name="patch_file">{"path":"teste.py","oldString":"import socket","newString":"import socket\\n# SSH PTY FTP buffer offset memoria"}</tool>';
+  const model = new ScriptedModel([patch, patch, "<final>não consegui implementar</final>"]);
+  const result = await runAgent({
+    task:
+      "adicionar ao arquivo como subir PTY em SSH FTP em SOCKET, adicionar tambem "
+      + "leitura de buffer dinamico e percorrer a memoria mapeando offsets durante a execucao",
+    config,
+    model,
+    targetFiles: ["teste.py"],
+  });
+
+  assert.equal(fs.readFileSync(path.join(ws, "teste.py"), "utf8"), original);
+  const patchStep = result.steps.find((step) => step.name === "patch_file");
+  assert.equal(patchStep?.ok, false);
+  assert.match(patchStep?.output ?? "", /QUALIDADE/);
+  assert.notEqual(result.status, "done");
+});
+
 test("modo alvo reconhece 'comece implementacao' como intenção de escrita", async () => {
   const ws = tempWorkspace();
   const config = defaultConfig(ws);

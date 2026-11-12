@@ -59,8 +59,18 @@ export function taskPrompt(
   extraContext?: string,
   targetFiles?: string[],
   writeIntent?: boolean,
+  requirements: string[] = [],
 ): string {
   const targets = (targetFiles ?? []).filter(Boolean);
+  const requirementBlock = requirements.length
+    ? [
+        "REQUISITOS EXPLÍCITOS DETECTADOS NA TAREFA:",
+        ...requirements.map((requirement) => `- ${requirement}`),
+        "Implemente cada requisito com código real. Não entregue apenas uma conexão de teste, comentário, TODO, stub ou placeholder.",
+        "Se um requisito não puder ser implementado com segurança, finalize explicando a limitação; não invente sucesso.",
+        "Para Python, garanta sintaxe válida (ex.: `if __name__ == \"__main__\":`) e um main() executável.",
+      ].join("\n")
+    : "";
   const targetBlock = targets.length
     ? [
         `ARQUIVO(S) ALVO: ${targets.join(", ")}`,
@@ -72,9 +82,13 @@ export function taskPrompt(
         "Se não existir, a primeira ação deve ser write_file com esse caminho exato e o conteúdo completo.",
         "Se existir, edite com patch_file usando um trecho exato do conteúdo fornecido; use write_file só para reescrever tudo.",
         "NÃO use glob, grep ou list_dir para explorar; não altere nenhum outro arquivo.",
+        requirementBlock,
         "Depois de salvar, verifique se o pedido foi cumprido e finalize com <final>.",
-      ].join("\n")
-    : "Comece inspecionando o repositório e só então edite.";
+      ].filter(Boolean).join("\n")
+    : [
+        "Comece inspecionando o repositório e só então edite.",
+        requirementBlock,
+      ].filter(Boolean).join("\n");
   return `${extraContext ? `${extraContext}\n\n` : ""}TAREFA\n${task}\n\n${targetBlock}`;
 }
 
